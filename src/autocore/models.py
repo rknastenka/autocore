@@ -240,6 +240,7 @@ class MixedLangFileType:
 
     path: Path
 
+
 #: The complete set of ambiguity types the pipeline may surface.
 Ambiguity = MultipleTops | UnclearTbStatus | MixedLangFileType
 

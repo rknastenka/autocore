@@ -1,9 +1,8 @@
-"""Unit tests for Stage 1 - Scan.
+"""Unit tests for Stage 1, Scan.
 
-The two on-disk fixtures stay realistic RTL trees, because the golden-file
-tests reuse them for comparison. Everything hostile — ``build/`` directories, symlink
-loops, ``.gitignore`` files that would hide their own test data from git — is
-built in ``tmp_path`` instead.
+The on-disk fixtures stay realistic RTL trees, since the golden files reuse
+them. Awkward trees (build dirs, symlink loops, .gitignore rules) are built in
+tmp_path instead.
 """
 
 from __future__ import annotations
@@ -38,9 +37,7 @@ def build(root: Path, layout: dict[str, str]) -> Path:
     return root
 
 
-# --------------------------------------------------------------------------
 # fixtures
-# --------------------------------------------------------------------------
 
 
 def test_single_module_fixture() -> None:
@@ -53,14 +50,12 @@ def test_single_module_fixture() -> None:
 def test_multi_file_hierarchy_fixture() -> None:
     result = scan(FIXTURES / "multi_file_hierarchy")
 
-    # Sorted by relative POSIX path: "include/..." < "rtl/core/..." < "rtl/top".
     assert rel(result) == (
         "include/defs.svh",
         "rtl/core/alu.v",
         "rtl/core/regfile.sv",
         "rtl/top.sv",
     )
-    # README.md is in that tree on purpose and must not appear.
     assert not any(p.suffix == ".md" for p in result.files)
 
 
@@ -71,9 +66,7 @@ def test_header_is_the_only_include_candidate() -> None:
     assert result.include_candidates <= set(result.files)
 
 
-# --------------------------------------------------------------------------
 # extension filtering
-# --------------------------------------------------------------------------
 
 
 def test_collects_exactly_the_six_source_extensions(tmp_path: Path) -> None:
@@ -113,9 +106,7 @@ def test_dotfile_named_like_an_extension_is_not_a_source(tmp_path: Path) -> None
     assert rel(scan(tmp_path)) == ("real.v",)
 
 
-# --------------------------------------------------------------------------
 # unconditional skip list
-# --------------------------------------------------------------------------
 
 
 def test_always_skipped_directories(tmp_path: Path) -> None:
@@ -163,9 +154,7 @@ def test_hidden_root_is_still_scanned(tmp_path: Path) -> None:
     assert rel(scan(tmp_path / ".hidden_root")) == ("a.v",)
 
 
-# --------------------------------------------------------------------------
-# .gitignore (pathspec 1.x)
-# --------------------------------------------------------------------------
+# .gitignore, via pathspec
 
 
 def test_gitignore_excludes_files_and_directories(tmp_path: Path) -> None:
@@ -228,7 +217,7 @@ def test_nested_gitignore_can_add_exclusions(tmp_path: Path) -> None:
 
 
 def test_ignored_directory_cannot_be_reincluded_from_within(tmp_path: Path) -> None:
-    """Git's rule: a parent directory that is excluded is excluded, full stop."""
+    """Git's rule: an excluded parent directory stays excluded."""
     build(
         tmp_path,
         {
@@ -271,9 +260,7 @@ def test_unreadable_gitignore_is_not_fatal(tmp_path: Path) -> None:
     assert rel(scan(tmp_path)) == ("top.v",)
 
 
-# --------------------------------------------------------------------------
 # symlinks
-# --------------------------------------------------------------------------
 
 
 def test_symlinked_directory_is_followed(tmp_path: Path) -> None:
@@ -312,13 +299,11 @@ def test_symlinked_file_is_collected(tmp_path: Path) -> None:
     assert rel(scan(tmp_path / "tree")) == ("prim.v", "top.v")
 
 
-# --------------------------------------------------------------------------
 # ordering, determinism and error handling
-# --------------------------------------------------------------------------
 
 
 def test_output_is_sorted_by_relative_posix_path(tmp_path: Path) -> None:
-    # Created in reverse so readdir order is unlikely to match the answer.
+    # Built in reverse so readdir order is unlikely to match the answer.
     build(
         tmp_path,
         {

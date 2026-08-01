@@ -139,9 +139,9 @@ def _run(
 ) -> list[tuple[FileFacts | None, tuple[Warning, ...]]]:
     """Parse the given paths either serially or in parallel.
 
-The returned list reflects completion order when workers are used. Callers are
-responsible for sorting if they need a stable visible order.
-"""
+    The returned list reflects completion order when workers are used. Callers are
+    responsible for sorting if they need a stable visible order.
+    """
     workers = _worker_count(len(paths), max_workers)
     if workers <= 1:
         return [_parse_one(backend, path, defines) for path in paths]

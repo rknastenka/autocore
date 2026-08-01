@@ -36,10 +36,10 @@ def parse_sources(
 ) -> ParseResult:
     """Parse all scanned files using the default source-language backend.
 
-At the moment, this means the pyslang-based Verilog/SystemVerilog backend.
-Unsupported scanned languages are reported as warnings by the shared parse
-driver.
-"""
+    At the moment, this means the pyslang-based Verilog/SystemVerilog backend.
+    Unsupported scanned languages are reported as warnings by the shared parse
+    driver.
+    """
     return parse_all(
         scan,
         SvSlangBackend.for_tree(scan),

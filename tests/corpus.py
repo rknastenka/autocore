@@ -1,9 +1,22 @@
-"""Main validation
+"""Run autocore over a real tree and check what a real consumer makes of it.
 
     python tests/corpus.py REPO [--top NAME] [--subdir NAME]
                                 [--expect-warning CODE] [--verilate]
                                 [--target default|sim]
 
+``REPO`` is a corpus clone or a copy of the `with_testbench` fixture; the
+assertion is the same either way. The CI corpus job calls this once per
+assertion. Not collected by pytest (no ``test_`` prefix).
+
+One invocation runs the installed CLI as a subprocess, repeats the pipeline
+in-process and compares the two outputs, loads the manifest with FuseSoC's
+strict CAPI2 loader, then optionally asserts a warning code and runs Verilator.
+
+The ``--verilate`` leg differs by target. ``default`` adds ``--mode=lint-only``,
+since a pure-RTL target has no C++ driver and would fail to link for want of
+``main()``; missing modules still fail loudly (MODMISSING). ``sim`` passes no
+mode, so the generated ``verilator: {mode: binary}`` applies and the testbench
+is built and run.
 """
 
 from __future__ import annotations
@@ -29,11 +42,8 @@ def main() -> None:
     if not repo.is_dir():
         sys.exit(f"corpus: {repo} is not a directory")
 
-    # An empty --subdir writes the manifest at the tree root, which is the
-    # layout auto-core recommends and the only one whose file paths never
-    # reach above the .core file (see OutputAboveCoreDir). The corpus repos
-    # cannot use it — picorv32 ships a name-colliding core — but a fixture
-    # tree can, and should, since that is what a user's own run looks like.
+    # An empty --subdir writes at the tree root, which is what a user's own run
+    # looks like. The corpus repos cannot: picorv32 ships a colliding core.
     core_name = f"{repo.name}_auto.core"
     core_path = repo / args.subdir / core_name if args.subdir else repo / core_name
 
@@ -92,7 +102,7 @@ def _tool(name: str) -> str:
 
 
 def _run_init(repo: Path, core_path: Path, top: str | None) -> str:
-    """Step 1: the CLI run. Returns its stderr (the full warning list)."""
+    """The CLI run. Returns its stderr, the full warning list."""
     command = [
         _tool("autocore"),
         "init",
@@ -118,7 +128,7 @@ def _run_init(repo: Path, core_path: Path, top: str | None) -> str:
 def _diagnostics(
     repo: Path, core_path: Path, top: str | None
 ) -> tuple[str, ProjectModel]:
-    """Step 2: the structured per-repo diagnostics. Returns (vlnv, model)."""
+    """The per-repo diagnostics. Returns (vlnv, model)."""
     result = generate(repo, GenerateOptions(top=top, core_dir=core_path.parent))
     model = result.model
     scanned = scan(repo).files
@@ -133,7 +143,7 @@ def _diagnostics(
     print(f"   sim toplevel:   {model.tb_top or '(none: no sim target)'}")
     print(f"   closure size:   {len(model.rtl)} file(s) in the rtl fileset")
     print(f"   scanned:        {len(scanned)} source file(s)")
-    print(f"   testbenches:    {len(model.testbenches)} (filename rule)")
+    print(f"   testbenches:    {len(model.testbenches)}")
     print(f"   excluded:       {len(excluded)} file(s) outside the closure")
     for path in excluded:
         print(f"     - {path}")
@@ -142,15 +152,15 @@ def _diagnostics(
     if core_path.read_text(encoding="utf-8") != result.text:
         sys.exit(
             "corpus: the CLI's output differs from an in-process generate() "
-            "with the same options — a determinism or plumbing bug"
+            "with the same options: a determinism or plumbing bug"
         )
     return result.manifest.vlnv, model
 
 
 def _validate_strict(core_path: Path, detected_top: str, target: str) -> None:
-    """Step 3: FuseSoC's own loader, strict mode, on the written file."""
+    """FuseSoC's own loader on the written file, strict mode."""
     flags = {"target": target, "is_toplevel": True}
-    # Raises fusesoc's SyntaxError on ANY schema violation.
+    # Strict mode raises fusesoc's SyntaxError on any schema violation.
     core = Core(Core2Parser(allow_additional_properties=False), core_path)
     files = core.get_files(flags)
     if not files:
@@ -172,18 +182,17 @@ def _validate_strict(core_path: Path, detected_top: str, target: str) -> None:
 
 
 def _assert_warning(init_stderr: str, code: str) -> None:
-    """Step 4: the warning path itself is the assertion, not mere success."""
+    """The warning path itself, not mere success, is the assertion."""
     if f"[{code}]" not in init_stderr:
         sys.exit(f"corpus: expected warning code [{code}] on the CLI's stderr")
     print(f"-- warning path: OK, [{code}] appeared on stderr")
 
 
 def _verilate(core_path: Path, vlnv: str, target: str) -> None:
-    """Step 5: the Verilator leg, from a scratch fusesoc workspace.
+    """The Verilator leg, from a scratch fusesoc workspace.
 
-    ``--mode=lint-only`` on the ``default`` target only. The ``sim`` target
-    brings its own ``mode: binary`` and is meant to run, so overriding the
-    mode there would test the opposite of what the leg exists for.
+    ``--mode=lint-only`` applies to the ``default`` target only: the ``sim``
+    target brings its own ``mode: binary`` and is meant to run.
     """
     command = [
         _tool("fusesoc"),
@@ -196,8 +205,8 @@ def _verilate(core_path: Path, vlnv: str, target: str) -> None:
     ]
     if target == "default":
         command.append("--mode=lint-only")
-    # Flushed because the subprocess below inherits stdout and writes to the
-    # fd directly — without this, a piped CI log interleaves the two wrongly.
+    # Flushed because the subprocess inherits stdout and writes to the fd
+    # directly; without this a piped CI log interleaves the two wrongly.
     print(f"-- verilator leg: {' '.join(command[1:])}", flush=True)
     with tempfile.TemporaryDirectory(prefix="autocore-corpus-") as workspace:
         completed = subprocess.run(command, cwd=workspace)

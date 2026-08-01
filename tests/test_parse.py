@@ -1,12 +1,9 @@
-"""Unit tests for Stage 2 - Parse.
+"""Unit tests for Stage 2, Parse.
 
-The two on-disk fixtures — `ifdef_heavy` and `broken_file` — pin the two
-behaviours the stage is most specific about: a guarded instantiation appears if
-and only if its define is active, and a file that will not parse costs a warning
-rather than the run. Everything narrower (a package import with three items, an
-include nobody can resolve, a `.vhd` in a Verilog-only tree) is built in
-`tmp_path`, where the shape of the source is visible right next to the assertion
-about it.
+The `ifdef_heavy` and `broken_file` fixtures pin the two headline behaviours: a
+guarded instantiation appears only when its define is active, and a file that
+will not parse costs a warning rather than the run. Narrower cases are built in
+`tmp_path`, so the source sits next to the assertion about it.
 """
 
 from __future__ import annotations
@@ -56,9 +53,7 @@ def names(result: ParseResult) -> tuple[str, ...]:
     return tuple(f.path.name for f in result.files)
 
 
-# --------------------------------------------------------------------------
 # fixtures on disk
-# --------------------------------------------------------------------------
 
 
 def test_single_module_fixture() -> None:
@@ -103,9 +98,7 @@ def test_without_include_paths_the_same_file_fails() -> None:
         parse_one(FIXTURES / "multi_file_hierarchy" / "rtl" / "top.sv")
 
 
-# --------------------------------------------------------------------------
-# ifdef_heavy - the define-gated instantiation
-# --------------------------------------------------------------------------
+# ifdef_heavy: the define-gated instantiation
 
 
 def test_guarded_instantiation_appears_iff_the_define_is_passed() -> None:
@@ -116,10 +109,9 @@ def test_guarded_instantiation_appears_iff_the_define_is_passed() -> None:
 
     assert "mul" not in without.instantiated
     assert "mul" in with_mul.instantiated
-    # The `else` branch is the same rule read backwards.
     assert "shifter" in without.instantiated
     assert "shifter" not in with_mul.instantiated
-    # Everything outside the guard is unaffected either way.
+    # Anything outside the guard is unaffected either way.
     assert "adder" in without.instantiated
     assert "adder" in with_mul.instantiated
 
@@ -133,7 +125,7 @@ def test_ifdef_heavy_parses_clean_in_both_modes() -> None:
 
 
 def test_a_valued_define_reaches_the_preprocessor(tmp_path: Path) -> None:
-    """`NAME=VALUE`, the other half of `--define`, observed through a name."""
+    """`NAME=VALUE`, the other half of `--define`."""
     build(
         tmp_path,
         {
@@ -156,9 +148,7 @@ def test_a_valued_define_reaches_the_preprocessor(tmp_path: Path) -> None:
     assert facts_for(overridden, "top.sv").instantiated == frozenset({"prim_fast"})
 
 
-# --------------------------------------------------------------------------
-# broken_file - never fatal
-# --------------------------------------------------------------------------
+# broken_file: never fatal
 
 
 def test_broken_file_warns_and_is_excluded() -> None:
@@ -191,7 +181,7 @@ def test_a_tree_of_nothing_but_broken_files_still_returns(tmp_path: Path) -> Non
 
 
 def test_warning_messages_carry_no_paths_or_line_numbers(tmp_path: Path) -> None:
-    """A warning that embedded the absolute path would break determinism."""
+    """An embedded absolute path would make the output non-deterministic."""
     build(tmp_path, {"a.sv": "module a ("})
 
     (warning,) = parse_sources(scan(tmp_path)).warnings
@@ -219,9 +209,7 @@ def test_a_file_that_vanished_is_a_warning_not_a_crash(tmp_path: Path) -> None:
     assert warning.path == missing
 
 
-# --------------------------------------------------------------------------
 # declarations, instantiations, imports
-# --------------------------------------------------------------------------
 
 
 def test_the_three_declaration_kinds(tmp_path: Path) -> None:
@@ -307,9 +295,7 @@ def test_a_file_with_nothing_in_it_yields_empty_facts(tmp_path: Path) -> None:
     assert facts.includes == frozenset()
 
 
-# --------------------------------------------------------------------------
 # includes, both paths
-# --------------------------------------------------------------------------
 
 
 def test_a_resolved_include_is_recorded_without_its_quotes(tmp_path: Path) -> None:
@@ -324,8 +310,7 @@ def test_a_resolved_include_is_recorded_without_its_quotes(tmp_path: Path) -> No
 
 
 def test_an_unresolved_include_survives_in_trivia(tmp_path: Path) -> None:
-    """The second path section 3.2 names: no file to splice, so the directive
-    stays behind as trivia and the target is still recoverable."""
+    """With no file to splice, the directive stays behind as trivia."""
     build(tmp_path, {"top.sv": '`include "nowhere.svh"\nmodule top;\nendmodule\n'})
 
     facts = parse_one(tmp_path / "top.sv")
@@ -381,12 +366,11 @@ def test_a_transitively_included_header_is_recorded(tmp_path: Path) -> None:
     assert facts.includes == frozenset({"outer.svh", "inner.svh"})
 
 
-# --------------------------------------------------------------------------
 # the backend seam
-# --------------------------------------------------------------------------
 
 
 def test_vhdl_is_reported_not_parsed(tmp_path: Path) -> None:
+    """Scan collects `.vhd`; there is no backend for it yet."""
     """Scan collects `.vhd`; there is no backend for it yet."""
     build(tmp_path, {"top.v": "module top;\nendmodule\n", "old.vhd": "entity e is"})
 
@@ -455,9 +439,7 @@ def test_a_backend_that_raises_something_unexpected_is_survivable(
     assert "kaboom" in result.warnings[0].message
 
 
-# --------------------------------------------------------------------------
-# tb evidence - evidence only, the parser classifies nothing
-# --------------------------------------------------------------------------
+# tb evidence: evidence only, the parser classifies nothing
 
 
 def evidence(tmp_path: Path, source: str) -> TbEvidence:
@@ -504,8 +486,8 @@ def test_dollar_stop_counts_the_same_as_dollar_finish(tmp_path: Path) -> None:
 
 
 def test_another_system_task_is_not_evidence(tmp_path: Path) -> None:
-    """`$display` is as common in RTL debug code as anywhere; only the two
-    task-control calls the rule names count."""
+    """`$display` is as common in RTL as anywhere, so only `$finish` and
+    `$stop` count."""
     assert not evidence(
         tmp_path, 'module m (input a);\n  initial $display("hi");\nendmodule\n'
     ).has_finish_or_stop
@@ -555,9 +537,8 @@ def test_initial_heavy_weighs_initial_against_structural_blocks(
 
 
 def test_an_instantiated_dut_does_not_weigh_against_initial(tmp_path: Path) -> None:
-    """Instantiations are deliberately out of the tally: a testbench always
-    instantiates its DUT, so counting them would penalise the exact files
-    this evidence exists to notice."""
+    """A testbench always instantiates its DUT, so counting instantiations
+    would penalise the files this evidence is meant to notice."""
     assert evidence(
         tmp_path,
         "module m (input clk);\n"
@@ -578,9 +559,7 @@ def test_partial_evidence_is_evidence_that_does_not_classify(tmp_path: Path) -> 
     assert found.partial and not found.strong
 
 
-# --------------------------------------------------------------------------
-# magic comments - a user directive, not evidence
-# --------------------------------------------------------------------------
+# magic comments: a user directive, not evidence
 
 
 def directive_of(tmp_path: Path, source: str) -> TbDirective | None:
@@ -604,10 +583,9 @@ def test_a_file_without_one_has_no_directive(tmp_path: Path) -> None:
 
 
 def test_a_comment_above_a_directive_is_still_found(tmp_path: Path) -> None:
-    """The wrinkle that made the trivia scan recursive: slang folds a comment
-    written directly above a preprocessor directive into that directive's own
-    trivia, where it never reaches a real token. A testbench opening with a
-    header comment above `timescale is the normal case."""
+    """Why the trivia scan recurses: slang folds a comment written above a
+    preprocessor directive into that directive's own trivia, where it never
+    reaches a real token."""
     assert (
         directive_of(
             tmp_path,
@@ -649,8 +627,8 @@ def test_a_comment_anywhere_in_the_file_counts(tmp_path: Path) -> None:
 
 
 def test_a_file_carrying_both_records_the_conflict(tmp_path: Path) -> None:
-    """Recording the contradiction rather than picking a winner keeps the
-    result independent of walk order; Resolve is what says so out loud."""
+    """Recording the contradiction keeps the result independent of walk order.
+    Resolve is what says so out loud."""
     assert (
         directive_of(
             tmp_path, "// autocore: tb\n// autocore: rtl\nmodule m;\nendmodule\n"
@@ -668,9 +646,7 @@ def test_the_same_directive_twice_is_not_a_conflict(tmp_path: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # parallelism, ordering and determinism
-# --------------------------------------------------------------------------
 
 
 def test_results_are_sorted_by_path(tmp_path: Path) -> None:
@@ -727,8 +703,7 @@ def test_warnings_are_sorted_by_path_then_code(tmp_path: Path) -> None:
 
 
 def test_every_scanned_file_is_accounted_for(tmp_path: Path) -> None:
-    """The invariant `ParseResult` exists to hold: files and warnings partition
-    what Scan handed over."""
+    """Files and warnings together cover everything Scan handed over."""
     build(
         tmp_path,
         {

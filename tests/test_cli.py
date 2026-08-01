@@ -1,10 +1,8 @@
-"""CLI tests — the contract, not the pipeline.
+"""CLI tests: the contract, not the pipeline.
 
-Everything pipeline-shaped is asserted elsewhere; these tests pin down what
-the thin skin over ``autocore.generate()`` promises: warnings on stderr, YAML
-in the output file or on stdout under ``--dry-run``, and the exit codes — 0
-for success including success-with-warnings, 1 for fatal (the overwrite
-refusal included), 2 for usage errors.
+What the thin skin over ``autocore.generate()`` promises: warnings on stderr,
+YAML in the output file or on stdout under ``--dry-run``, and the exit codes.
+0 is success with or without warnings, 1 is fatal, 2 is a usage error.
 """
 
 from __future__ import annotations
@@ -24,9 +22,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 
-# --------------------------------------------------------------------------
 # scaffold smoke
-# --------------------------------------------------------------------------
 
 
 def test_version_flag_reports_version() -> None:
@@ -63,15 +59,13 @@ def test_init_help_lists_every_documented_flag() -> None:
 
 
 def test_the_tb_glob_help_says_it_replaces_the_defaults() -> None:
-    """It could plausibly extend them instead, so the help has to say which."""
+    """It could just as plausibly extend them, so the help has to say which."""
     result = runner.invoke(app, ["init", "--help"])
 
     assert "REPLACES" in result.output
 
 
-# --------------------------------------------------------------------------
 # --dry-run: YAML on stdout, warnings on stderr, exit 0
-# --------------------------------------------------------------------------
 
 
 def test_dry_run_prints_exactly_the_golden_to_stdout() -> None:
@@ -119,9 +113,7 @@ def test_verbose_and_quiet_exclude_each_other() -> None:
     assert result.exit_code == 2
 
 
-# --------------------------------------------------------------------------
 # flags that reach the pipeline
-# --------------------------------------------------------------------------
 
 
 def test_name_and_library_shape_the_vlnv() -> None:
@@ -186,8 +178,7 @@ def test_a_testbench_tree_emits_the_sim_target() -> None:
 
 
 def test_tb_glob_reaches_the_pipeline_and_replaces_the_defaults() -> None:
-    """`multiple_tops` has no testbench until a glob says otherwise; naming
-    `soc_b.v` moves it out of rtl and into a sim target of its own."""
+    """Naming `soc_b.v` moves it out of rtl and into a sim target of its own."""
     result = runner.invoke(
         app,
         ["init", str(FIXTURES / "multiple_tops"), "--dry-run", "--tb-glob", "soc_b.*"],
@@ -196,18 +187,14 @@ def test_tb_glob_reaches_the_pipeline_and_replaces_the_defaults() -> None:
     assert result.exit_code == 0
     assert "toplevel: soc_b\n" in result.stdout
     assert "default_tool: verilator" in result.stdout
-    # `soc_b` is no longer an rtl top candidate, so the ambiguity is gone too.
     assert "MultipleTops" not in result.stderr
 
 
-# --------------------------------------------------------------------------
 # --define UX: both forms documented, garbage refused, -v accountable
-# --------------------------------------------------------------------------
 
 
 def test_the_define_help_shows_both_forms() -> None:
-    """A flag that takes NAME and NAME=VALUE has to say so; guessing wrong
-    costs a silent misparse rather than an error."""
+    """Guessing wrong costs a silent misparse rather than an error."""
     result = runner.invoke(app, ["init", "--help"])
 
     assert "NAME=VALUE" in result.output
@@ -243,8 +230,7 @@ def test_a_define_may_carry_an_empty_value() -> None:
 
 
 def test_a_malformed_define_is_a_usage_error() -> None:
-    """Slang takes predefines as opaque strings, so garbage would define
-    nothing and surface later as an unexplained parse failure instead."""
+    """Slang takes predefines as opaque strings, so garbage defines nothing."""
     result = runner.invoke(
         app,
         ["init", str(FIXTURES / "single_module"), "--dry-run", "--define", "2BAD=1"],
@@ -283,8 +269,7 @@ def test_verbose_lists_the_defines_in_effect() -> None:
 
 
 def test_verbose_says_so_when_no_define_is_in_effect() -> None:
-    """The interesting case: a suspiciously small rtl fileset and a user
-    wondering whether their -D reached the tool at all."""
+    """For the user wondering whether their -D reached the tool at all."""
     result = runner.invoke(
         app, ["init", str(FIXTURES / "ifdef_heavy"), "--dry-run", "-v"]
     )
@@ -292,9 +277,7 @@ def test_verbose_says_so_when_no_define_is_in_effect() -> None:
     assert "info: defines in effect: none" in result.stderr
 
 
-# --------------------------------------------------------------------------
 # warning volume: grouped by default, whole under -v
-# --------------------------------------------------------------------------
 
 
 def externals(tmp_path: Path, count: int) -> Path:
@@ -315,13 +298,11 @@ def test_a_repeated_warning_code_collapses_into_one_counted_line(
     lines = [line for line in result.stderr.splitlines() if "ExternalReference" in line]
     assert len(lines) == 1
     assert lines[0].startswith("warning: 4 x [ExternalReference], e.g. ")
-    # The count is not the whole story, so the line says where the rest is.
     assert "-v lists them all" in lines[0]
 
 
 def test_a_code_below_the_threshold_is_not_grouped(tmp_path: Path) -> None:
-    """Two of a kind is not a wall; collapsing them would hide a message to
-    save no scrolling at all."""
+    """Two of a kind is not a wall worth collapsing."""
     result = runner.invoke(app, ["init", str(externals(tmp_path, 2)), "--dry-run"])
 
     lines = [line for line in result.stderr.splitlines() if "ExternalReference" in line]
@@ -341,7 +322,7 @@ def test_verbose_expands_every_repeated_warning(tmp_path: Path) -> None:
 
 
 def test_a_long_file_list_is_folded_until_verbose_asks() -> None:
-    """`ExcludedFromRtl` names one file here and 18 on picorv32; the message
+    """`ExcludedFromRtl` names one file here and 18 on picorv32, so the message
     carries the count and the names travel as details."""
     folded = runner.invoke(
         app, ["init", str(FIXTURES / "multiple_tops"), "--dry-run", "--yes"]
@@ -354,7 +335,6 @@ def test_a_long_file_list_is_folded_until_verbose_asks() -> None:
     assert "1 file(s) not reachable from top 'soc_a'" in line
     assert "rtl/soc_b.v" not in line
     assert "-v lists them" in line
-    # Nothing is unreachable, it is only folded: -v indents the names beneath.
     assert "    rtl/soc_b.v" in expanded.stderr
 
 
@@ -366,14 +346,11 @@ def test_quiet_still_silences_everything(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
-# --------------------------------------------------------------------------
 # an output above the tree it describes
-# --------------------------------------------------------------------------
 
 
 def test_an_output_outside_the_tree_warns_about_upward_paths(tmp_path: Path) -> None:
-    """fusesoc 2.4.6 deprecates `../` file paths and will make them an error,
-    so the choice that produces them is worth saying out loud."""
+    """fusesoc 2.4.6 deprecates `../` file paths and will make them an error."""
     root = project(tmp_path)
     out = tmp_path / "build" / "single_module.core"
 
@@ -396,19 +373,13 @@ def test_the_default_output_never_warns_about_upward_paths(tmp_path: Path) -> No
     assert "OutputAboveCoreDir" not in result.stderr
 
 
-# --------------------------------------------------------------------------
-# --yes and the prompt gate
-#
-# CliRunner's stdin is not a terminal, so every test above already runs the
-# not-a-TTY leg of the gate. These pin the other two: a TTY that prompts, and
-# a TTY silenced by --yes. The seam is entered the way the CLI enters it —
-# `interact.decide` builds the real asker itself, so replacing that class is
-# what a test replaces, and the gate under test is the real one.
-# --------------------------------------------------------------------------
+# --yes and the prompt gate. CliRunner's stdin is not a terminal, so the tests
+# above cover the not-a-TTY leg; these pin a TTY that prompts and a TTY
+# silenced by --yes.
 
 
 class FakeAsker:
-    """The scripted `Asker` again; an empty queue means "pressed enter"."""
+    """A scripted `Asker`; an empty queue means "pressed enter"."""
 
     def __init__(self, *answers: str) -> None:
         self.answers = list(answers)
@@ -424,11 +395,9 @@ class FakeAsker:
 def at_a_terminal(monkeypatch, *answers: str) -> FakeAsker:
     """Put the CLI at a terminal with a scripted asker behind the seam.
 
-    `CliRunner.invoke` installs its own `sys.stdin` for the duration of the
-    call, so patching `sys.stdin` out here would simply be overwritten — the
-    terminal has to be simulated on the runner's own stream class instead.
-    Nothing about the gate is faked: the CLI still reads the real `sys.stdin`
-    and `decide` still asks it the real question.
+    `CliRunner.invoke` installs its own `sys.stdin`, so the terminal is
+    simulated on the runner's own stream class instead. The gate itself stays
+    real.
     """
     asker = FakeAsker(*answers)
     monkeypatch.setattr(typer.testing._NamedTextIOWrapper, "isatty", lambda self: True)
@@ -444,13 +413,12 @@ def test_a_terminal_prompts_and_the_answer_reaches_the_manifest(monkeypatch) -> 
     assert result.exit_code == 0
     assert len(asker.asked) == 1
     assert "toplevel: soc_b" in result.stdout
-    # Asked and answered: the warning about the guess is spent.
     assert "MultipleTops" not in result.stderr
 
 
 def test_pressing_enter_reproduces_the_yes_output_byte_for_byte(monkeypatch) -> None:
-    """Prompting happens outside the pipeline, so an all-defaults interactive
-    run and a ``--yes`` run emit the same bytes."""
+    """Prompting happens outside the pipeline, so an all-defaults run and a
+    ``--yes`` run emit the same bytes."""
     with_yes = runner.invoke(
         app, ["init", str(FIXTURES / "multiple_tops"), "--dry-run", "--yes"]
     )
@@ -465,7 +433,6 @@ def test_pressing_enter_reproduces_the_yes_output_byte_for_byte(monkeypatch) -> 
 
 
 def test_yes_silences_the_prompt_at_a_terminal(monkeypatch) -> None:
-    """``--yes`` is not a no-op: this is the condition it silences."""
     asker = at_a_terminal(monkeypatch, "soc_b")
 
     result = runner.invoke(
@@ -475,7 +442,6 @@ def test_yes_silences_the_prompt_at_a_terminal(monkeypatch) -> None:
     assert result.exit_code == 0
     assert asker.asked == []
     assert "toplevel: soc_a" in result.stdout
-    # Not asked, so told instead.
     assert "MultipleTops" in result.stderr
 
 
@@ -500,15 +466,9 @@ def test_a_pipe_asks_nothing_without_yes() -> None:
     assert "MultipleTops" in piped.stderr
 
 
-# --------------------------------------------------------------------------
-# with_testbench and multiple_tops in both TTY-simulated and --yes modes
-#
-# Asserted as one block rather than left implicit in the tests above, because
-# the claim is about *pairs* of runs: the tree with no question to
-# ask must be unaffected by there being a terminal, and the tree with one must
-# take the answer in the interactive mode and say what it assumed in the other.
-# Both fixtures, both modes, four tests.
-# --------------------------------------------------------------------------
+# Two fixtures, two modes: the tree with nothing to ask must be unaffected by
+# there being a terminal, and the tree with a question must take the answer in
+# one mode and say what it assumed in the other.
 
 
 def test_exit_criterion_with_testbench_under_yes() -> None:
@@ -521,7 +481,6 @@ def test_exit_criterion_with_testbench_under_yes() -> None:
     assert result.stdout == (GOLDEN / "with_testbench.core").read_text()
     assert "toplevel: chip\n" in result.stdout
     assert "toplevel: chip_tb\n" in result.stdout
-    # Every classification branch decided a file, so none had to guess.
     assert result.stderr == ""
 
 
@@ -537,8 +496,7 @@ def test_exit_criterion_with_testbench_at_a_terminal(monkeypatch) -> None:
 
 
 def test_exit_criterion_multiple_tops_under_yes() -> None:
-    """The ambiguous tree, unasked: the fallback decides and the warning says
-    so."""
+    """The ambiguous tree, unasked: detection decides and the warning says so."""
     result = runner.invoke(
         app, ["init", str(FIXTURES / "multiple_tops"), "--dry-run", "--yes"]
     )
@@ -546,13 +504,12 @@ def test_exit_criterion_multiple_tops_under_yes() -> None:
     assert result.exit_code == 0
     assert result.stdout == (GOLDEN / "multiple_tops.core").read_text()
     assert "toplevel: soc_a\n" in result.stdout
-    # Told what was assumed, and what it cost: soc_b fell out of the closure.
     assert "[MultipleTops]" in result.stderr
     assert "[ExcludedFromRtl]" in result.stderr
 
 
 def test_exit_criterion_multiple_tops_at_a_terminal(monkeypatch) -> None:
-    """The ambiguous tree, asked: one question, with the numbers the fallback
+    """The ambiguous tree, asked: one question carrying the numbers detection
     weighed, and an answer that reaches the manifest."""
     asker = at_a_terminal(monkeypatch, "soc_b")
 
@@ -565,13 +522,10 @@ def test_exit_criterion_multiple_tops_at_a_terminal(monkeypatch) -> None:
     ]
     assert "toplevel: soc_b\n" in result.stdout
     assert "rtl/soc_b.v" in result.stdout
-    # Answered, so nothing was assumed and nothing is warned about.
     assert "[MultipleTops]" not in result.stderr
 
 
-# --------------------------------------------------------------------------
 # usage errors (exit 2)
-# --------------------------------------------------------------------------
 
 
 def test_a_name_outside_the_vlnv_charset_is_a_usage_error() -> None:
@@ -597,9 +551,7 @@ def test_a_missing_path_is_a_usage_error() -> None:
     assert result.exit_code == 2
 
 
-# --------------------------------------------------------------------------
 # the write site: default output, overwrite refusal, --force
-# --------------------------------------------------------------------------
 
 
 def project(tmp_path: Path, fixture: str = "single_module") -> Path:
@@ -630,7 +582,7 @@ def test_dash_name_renames_the_default_output(tmp_path: Path) -> None:
     assert (root / "alpha.core").is_file()
 
 
-def test_d20_an_existing_output_is_refused_with_exit_1(tmp_path: Path) -> None:
+def test_an_existing_output_is_refused_with_exit_1(tmp_path: Path) -> None:
     root = project(tmp_path)
     (root / "single_module.core").write_text("precious\n")
 

@@ -1,9 +1,8 @@
-"""Unit tests for Stage 4 - Emit.
+"""Unit tests for Stage 4, Emit.
 
-Everything here runs on hand-built models: `to_manifest` and `emit` are pure,
-so the shape under test sits right next to the assertion about it, and no RTL
-needs to exist. The real pipeline against the on-disk fixtures is
-`test_e2e.py`'s job.
+Everything here runs on hand-built models. `to_manifest` and `emit` are pure,
+so no RTL needs to exist and the shape under test sits next to the assertion
+about it. Running the real pipeline over the fixtures is `test_e2e.py`'s job.
 """
 
 from __future__ import annotations
@@ -19,8 +18,8 @@ from autocore.models import CoreManifest, ProjectModel, ToolOption
 
 ROOT = Path("/proj")
 
-#: The tree most tests scan-from and emit-into: absolute paths in the model
-#: below and the `to_manifest` root must agree for relative paths to be tidy.
+#: The tree most tests emit into. The model's absolute paths and the
+#: `to_manifest` root have to agree for the relative paths to come out tidy.
 DIR = ROOT / "dir"
 
 
@@ -51,9 +50,7 @@ def rtl_of(manifest: CoreManifest):
     return fileset
 
 
-# --------------------------------------------------------------------------
-# assembly - VLNV
-# --------------------------------------------------------------------------
+# assembly: VLNV
 
 
 def test_the_default_vlnv_comes_from_the_directory_name() -> None:
@@ -66,7 +63,6 @@ def test_the_default_vlnv_comes_from_the_directory_name() -> None:
 def test_the_directory_name_is_sanitized_to_the_fusesoc_charset() -> None:
     manifest = to_manifest(pm(root=ROOT / "My Chip (v2)!"), ROOT / "My Chip (v2)!")
 
-    # Runs of disallowed characters fold to one `_`; edge artefacts drop.
     assert manifest.vlnv == "::My_Chip_v2:0.1.0"
 
 
@@ -82,9 +78,7 @@ def test_name_and_library_overrides_are_taken_verbatim() -> None:
     assert manifest.vlnv == ":mylib:alpha:0.1.0"
 
 
-# --------------------------------------------------------------------------
-# assembly - fileset structure
-# --------------------------------------------------------------------------
+# assembly: fileset structure
 
 
 def test_files_follow_compile_order_relative_and_posix() -> None:
@@ -108,8 +102,7 @@ def test_the_dominant_language_sets_the_fileset_file_type() -> None:
 
     rtl = rtl_of(manifest)
     assert rtl.file_type == "systemVerilogSource"
-    # Assembly records every file's own type; rendering is what collapses the
-    # ones matching the dominant type (asserted below on the emitted text).
+    # Assembly records every file's own type; rendering is what collapses them.
     assert [entry.file_type for entry in rtl.files] == [
         "systemVerilogSource",
         "systemVerilogSource",
@@ -150,9 +143,7 @@ def test_the_default_target_names_the_rtl_fileset_and_the_top() -> None:
     assert target.default_tool is None  # that is the sim target's business
 
 
-# --------------------------------------------------------------------------
-# assembly - the tb fileset and the sim target
-# --------------------------------------------------------------------------
+# assembly: the tb fileset and the sim target
 
 
 def with_tb(tb_alternatives: tuple[str, ...] = ()) -> ProjectModel:
@@ -171,7 +162,6 @@ def test_a_testbench_adds_a_tb_fileset_and_a_sim_target() -> None:
     rtl, tb = manifest.filesets
     assert rtl.name == "rtl" and tb.name == "tb"
     assert [entry.path for entry in tb.files] == ["bench/scb.sv", "bench/chip_tb.sv"]
-    # Each fileset gets its own dominant type.
     assert rtl.file_type == "verilogSource"
     assert tb.file_type == "systemVerilogSource"
 
@@ -186,8 +176,8 @@ def test_a_testbench_adds_a_tb_fileset_and_a_sim_target() -> None:
 
 
 def test_the_default_target_carries_no_tool_options() -> None:
-    """The A1 exception is the sim target's alone: a `default` target is
-    synthesis-shaped and has no business naming a simulator's mode."""
+    """A `default` target is synthesis-shaped and has no business naming a
+    simulator's mode."""
     default, _sim = to_manifest(with_tb(), DIR).targets
 
     assert default.tools == ()
@@ -195,9 +185,8 @@ def test_the_default_target_carries_no_tool_options() -> None:
 
 
 def test_the_sim_target_pins_verilator_to_binary_mode() -> None:
-    """Without it edalize defaults Verilator to `cc`, which needs a C++
-    driver: the generated sim target would compile and then fail to link for
-    want of a `main()`. See `emit.SIM_TOOL_OPTIONS`."""
+    """Without it edalize defaults Verilator to `cc`, which needs a C++ driver,
+    so the sim target would fail to link for want of a `main()`."""
     text = emit(to_manifest(with_tb(), DIR))
 
     assert "    tools:\n      verilator:\n        mode: binary\n" in text
@@ -210,14 +199,14 @@ def test_no_testbench_means_no_tb_fileset_and_no_sim_target() -> None:
     assert [target.name for target in manifest.targets] == ["default"]
 
 
-def test_d19_a_tb_top_without_tb_files_emits_no_sim_target() -> None:
+def test_a_tb_top_without_tb_files_emits_no_sim_target() -> None:
     manifest = to_manifest(pm(("alu.v",), top="alu", tb_top="ghost_tb"), DIR)
 
     assert [target.name for target in manifest.targets] == ["default"]
 
 
 def test_a_tb_only_tree_names_only_the_filesets_it_built() -> None:
-    """The sim target must not name an rtl fileset that was never emitted."""
+    """The sim target must not name an rtl fileset nobody emitted."""
     manifest = to_manifest(pm(tb_top="chip_tb", tb_order=("bench/chip_tb.sv",)), DIR)
 
     assert [fileset.name for fileset in manifest.filesets] == ["tb"]
@@ -242,9 +231,7 @@ def test_the_sim_target_renders_in_full() -> None:
     )
 
 
-# --------------------------------------------------------------------------
-# A2: exactly one sim toplevel, and a comment when it was a guess
-# --------------------------------------------------------------------------
+# exactly one sim toplevel, and a comment when it was a guess
 
 
 def test_several_bench_candidates_still_yield_exactly_one_sim_target() -> None:
@@ -256,8 +243,7 @@ def test_several_bench_candidates_still_yield_exactly_one_sim_target() -> None:
 
 
 def test_an_ambiguous_sim_toplevel_is_flagged_in_the_file_itself() -> None:
-    """The stderr warning is gone by the time anyone opens the `.core`; this
-    comment is what survives to be read next to the guess it describes."""
+    """The stderr warning is long gone by the time anyone opens the `.core`."""
     text = emit(to_manifest(with_tb(tb_alternatives=("a_tb", "z_tb")), DIR))
 
     assert (
@@ -276,6 +262,7 @@ def test_an_unambiguous_sim_toplevel_gets_no_comment() -> None:
 
 def test_the_ambiguity_comment_is_deterministic() -> None:
     """Determinism reaches the comments too, not just the data."""
+    """Determinism reaches the comments too, not just the data."""
     model = with_tb(tb_alternatives=("a_tb", "z_tb"))
 
     assert emit(to_manifest(model, DIR)) == emit(to_manifest(model, DIR))
@@ -289,9 +276,7 @@ def test_an_empty_model_yields_no_fileset_and_a_bare_target() -> None:
     assert target.filesets == () and target.toplevel is None
 
 
-# --------------------------------------------------------------------------
 # rendering
-# --------------------------------------------------------------------------
 
 
 def test_the_header_is_exactly_capi2_then_the_generated_by_comment() -> None:
@@ -309,10 +294,8 @@ def test_the_header_is_exactly_capi2_then_the_generated_by_comment() -> None:
 
 
 def test_the_generated_by_line_has_its_exact_format() -> None:
-    """The one dedicated assertion on the version-bearing line: the e2e suite
-    normalizes the version out of its byte comparison so that a bump does not
-    invalidate every golden, which makes this the only place the line's full
-    format is pinned down."""
+    """The e2e suite normalizes the version out of its byte comparison, so this
+    is the only place the full format is pinned down."""
     text = emit(to_manifest(pm(("alu.v",), top="alu"), DIR))
 
     line = text.splitlines()[1]
@@ -343,14 +326,14 @@ def test_an_include_file_gets_its_flag_and_no_redundant_file_type() -> None:
     assert text.count("file_type") == 1  # the fileset-level key only
 
 
-def test_d19_no_empty_structural_keys_anywhere() -> None:
+def test_no_empty_structural_keys_anywhere() -> None:
     text = emit(to_manifest(pm(("alu.v",), top="alu"), DIR))
 
     for forbidden in ("depend", "[]", "{}", "include_dirs", "null"):
         assert forbidden not in text
 
 
-def test_d19_an_empty_model_emits_only_the_name() -> None:
+def test_an_empty_model_emits_only_the_name() -> None:
     text = emit(to_manifest(pm(), DIR))
 
     assert text.splitlines()[-1] == "name: ::dir:0.1.0"
@@ -367,9 +350,7 @@ def test_rendering_is_repeatable() -> None:
     assert first == second
 
 
-# --------------------------------------------------------------------------
 # the write site
-# --------------------------------------------------------------------------
 
 
 def test_write_core_writes_utf8_with_fixed_newlines(tmp_path: Path) -> None:

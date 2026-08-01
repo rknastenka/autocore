@@ -1,15 +1,13 @@
-"""Real-consumer validation.
+"""Real-consumer validation of the golden files.
 
-Every golden file is parsed by FuseSoC's own CAPI2 loader in strict mode
-(``allow_additional_properties=False``), and the *resolved* default-target
-file list — what FuseSoC would actually hand a tool — is asserted against a
-hand-written expectation, not against anything the pipeline computed. The
-goldens are already byte-pinned by test_e2e.py; these tests pin what they
-*mean* to the consumer that matters, so a fusesoc bump or a schema drift in
-our emitter fails loudly here.
+Every golden is parsed by FuseSoC's own CAPI2 loader in strict mode, and the
+resolved file list (what FuseSoC would actually hand a tool) is checked against
+a hand-written expectation rather than anything the pipeline computed.
+test_e2e.py pins the goldens byte for byte; this pins what they mean to the
+consumer, so a fusesoc bump or a schema drift in our emitter fails loudly.
 
-This uses fusesoc's internal API, which is exactly why fusesoc is pinned in
-the dev dependencies.
+It uses fusesoc's internal API, which is why fusesoc is pinned in the dev
+dependencies.
 """
 
 from __future__ import annotations
@@ -25,8 +23,8 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
 GOLDEN_NAMES = sorted(path.stem for path in GOLDEN.glob("*.core"))
 
 #: Per golden: the toplevel and the resolved default-target file list as
-#: ``(name, file_type, is_include_file)``, in order. Written by hand — keep
-#: it that way, so a pipeline regression cannot rewrite the expectation.
+#: ``(name, file_type, is_include_file)``, in order. Written by hand so a
+#: pipeline regression cannot rewrite the expectation.
 EXPECTED: dict[str, tuple[str, list[tuple[str, str, bool]]]] = {
     "broken_file": (
         "good",
@@ -78,18 +76,13 @@ EXPECTED: dict[str, tuple[str, list[tuple[str, str, bool]]]] = {
     ),
 }
 
-#: The same, for the ``sim`` target, and only for the goldens that have one,
-#: plus the tool options FuseSoC hands the tool. FuseSoC resolves the target's
-#: filesets in the order the target names them, so the file list is the rtl
-#: list followed by the tb list — which is exactly the property the closure
-#: subtraction in Resolve exists to protect: `chip_tb` reaches all of rtl, and
-#: none of it is listed twice.
+#: The same for the ``sim`` target, plus the tool options FuseSoC hands the
+#: tool. Filesets resolve in the order the target names them, so the list is
+#: rtl followed by tb, with nothing listed twice.
 #:
-#: The options are the exception to the "no tool options" scope rule, and
-#: they are asserted through the *consumer* rather than the emitted text
-#: because that is the whole point of them: edalize defaults Verilator to
-#: ``cc`` mode, and a sim target FuseSoC resolves back to anything but
-#: ``binary`` is one that cannot link for want of a C++ ``main()``.
+#: The options are asserted through the consumer rather than the emitted text
+#: because that is the point of them: edalize defaults Verilator to ``cc``
+#: mode, and anything but ``binary`` cannot link for want of a C++ ``main()``.
 EXPECTED_SIM: dict[str, tuple[str, list[tuple[str, str, bool]], dict[str, str]]] = {
     "with_testbench": (
         "chip_tb",
@@ -107,8 +100,7 @@ EXPECTED_SIM: dict[str, tuple[str, list[tuple[str, str, bool]], dict[str, str]]]
 
 
 def test_every_golden_has_a_hand_written_expectation() -> None:
-    # Discovery guard: a new golden without an entry here fails immediately,
-    # and a stale entry outlives its golden just as loudly.
+    # A new golden without an entry fails here, and so does a stale entry.
     assert GOLDEN_NAMES == sorted(EXPECTED)
 
 
@@ -119,8 +111,7 @@ def target_names(name: str) -> list[str]:
 
 
 def test_exactly_the_expected_goldens_carry_a_sim_target() -> None:
-    # The other half of the guard: a sim target appearing where none was
-    # intended is as much a regression as one going missing.
+    # An unintended sim target is as much a regression as a missing one.
     with_sim = sorted(name for name in GOLDEN_NAMES if "sim" in target_names(name))
 
     assert with_sim == sorted(EXPECTED_SIM)
@@ -150,7 +141,7 @@ def test_strict_fusesoc_resolves_the_expected_sim_target(name: str) -> None:
 def test_strict_fusesoc_resolves_the_expected_default_target(name: str) -> None:
     flags = {"target": "default", "is_toplevel": True}
 
-    # Raises fusesoc's SyntaxError on ANY schema violation.
+    # Strict mode raises fusesoc's SyntaxError on any schema violation.
     core = Core(Core2Parser(allow_additional_properties=False), GOLDEN / f"{name}.core")
 
     actual = [

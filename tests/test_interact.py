@@ -1,17 +1,13 @@
 """Tests for the interactive layer.
+"""Tests for the interactive layer.
 
-Three things are under test and they are worth naming apart:
+Three things are under test: the gate (prompt only at a TTY, without ``--yes``,
+with an ambiguity to raise), the questions (what is asked, in what order, with
+which default), and the answers (that they come back in the shape Resolve takes
+and that all defaults reproduce the ``--yes`` result).
 
-* **the gate** — prompt if and only if stdin is a TTY, ``--yes`` was not
-  passed, and an `Ambiguity` exists. Eight combinations, one rule, one place.
-* **the questions** — for each member of the ambiguity union: what is asked,
-  in what order, and which answer is the default.
-* **the answers** — that they come back in the shape Resolve takes, and that
-  accepting every default reproduces the ``--yes`` result exactly.
-
-No test drives a real TTY: `FakeStdin` decides what `isatty()` says and
-`FakeAsker` replaces questionary through the asker seam. CI has no terminal, and
-a test suite that needed one would simply be untestable there.
+No test drives a real TTY. `FakeStdin` decides what `isatty()` says and
+`FakeAsker` stands in for questionary, so the suite still runs on CI.
 """
 
 from __future__ import annotations
@@ -38,9 +34,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 ROOT = Path("/proj")
 
 
-# --------------------------------------------------------------------------
 # the seam: a scripted asker and a stdin that says what it is told to
-# --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -63,9 +57,8 @@ class Ask:
 class FakeAsker:
     """A scripted `Asker`: records every prompt, answers from a queue.
 
-    An exhausted queue means "pressed enter" — the default — which is both
-    what the real asker returns for an interrupted prompt and the case that
-    has to end up identical to ``--yes``.
+    An exhausted queue means "pressed enter", so the default applies, which is
+    the case that has to come out identical to ``--yes``.
     """
 
     def __init__(self, *answers: str) -> None:
@@ -108,16 +101,14 @@ UNCLEAR = UnclearTbStatus(path=ROOT / "bench" / "monitor.sv")
 
 
 def test_the_fake_asker_satisfies_the_protocol() -> None:
-    # Cheap, but it is the seam's whole contract: if the fake drifts from
-    # `Asker`, every test below is testing something auto-core never calls.
+    # If the fake drifts from `Asker`, every test below exercises something
+    # auto-core never calls.
     asker: Asker = FakeAsker()
 
     assert asker.select("q", [Choice("a", "A")], default="a") == "a"
 
 
-# --------------------------------------------------------------------------
 # the gate: three conditions, one place
-# --------------------------------------------------------------------------
 
 
 def test_a_tty_without_yes_and_with_an_ambiguity_prompts() -> None:
@@ -131,15 +122,13 @@ def test_a_tty_without_yes_and_with_an_ambiguity_prompts() -> None:
     assert decisions == Decisions(top="soc_b")
 
 
-#: Every ambiguity type that can reach a prompt today. The two gate tests
-#: below run over all of them, because "prompt iff three conditions" is a
-#: property of the gate, not of any one question.
+#: Every ambiguity type that can reach a prompt today. The gate tests run over
+#: all of them, since the gate belongs to no one question.
 PROMPTABLE = {"MultipleTops": TWO_TOPS, "UnclearTbStatus": UNCLEAR}
 
 
 @pytest.mark.parametrize("ambiguity", list(PROMPTABLE.values()), ids=list(PROMPTABLE))
 def test_yes_never_prompts_even_on_a_tty(ambiguity) -> None:
-    """The condition that stopped being a no-op in this session."""
     asker = FakeAsker("soc_b", "tb")
 
     decisions = decide(
@@ -152,8 +141,7 @@ def test_yes_never_prompts_even_on_a_tty(ambiguity) -> None:
 
 @pytest.mark.parametrize("ambiguity", list(PROMPTABLE.values()), ids=list(PROMPTABLE))
 def test_a_pipe_never_prompts_even_without_yes(ambiguity) -> None:
-    """No terminal, no question — which is what makes a CI run behave the
-    same way with or without ``--yes``."""
+    """No terminal, no question, so CI behaves the same either way."""
     asker = FakeAsker("soc_b", "tb")
 
     decisions = decide(
@@ -175,8 +163,8 @@ def test_an_unambiguous_tree_never_prompts_on_a_tty_either() -> None:
 
 @pytest.mark.parametrize("stream", [None, io.StringIO()], ids=["none", "closed"])
 def test_a_missing_or_unusable_stdin_falls_back_to_the_defaults(stream) -> None:
-    """A GUI-launched interpreter has no stdin at all. That is a reason to
-    apply the documented default, never to fail a run."""
+    """A GUI-launched interpreter has no stdin at all, which is a reason to
+    apply the default rather than to fail the run."""
     if isinstance(stream, io.StringIO):
         stream.close()
     asker = FakeAsker("soc_b")
@@ -189,9 +177,7 @@ def test_a_missing_or_unusable_stdin_falls_back_to_the_defaults(stream) -> None:
     assert not decisions
 
 
-# --------------------------------------------------------------------------
 # MultipleTops
-# --------------------------------------------------------------------------
 
 
 def ask_about(*ambiguities, answers: tuple[str, ...] = ()) -> tuple[FakeAsker, ...]:
@@ -206,9 +192,9 @@ def ask_about(*ambiguities, answers: tuple[str, ...] = ()) -> tuple[FakeAsker, .
     return asker, decisions
 
 
-def test_the_top_prompt_defaults_to_the_d15_winner() -> None:
-    """`ProjectModel.top` is what the fallback already applied, so pressing
-    enter is the same answer ``--yes`` would have produced."""
+def test_the_top_prompt_defaults_to_the_detected_top() -> None:
+    """`ProjectModel.top` is what detection already picked, so pressing enter
+    gives the answer ``--yes`` would have."""
     asker, decisions = ask_about(TWO_TOPS)
 
     (ask,) = asker.asked
@@ -217,8 +203,8 @@ def test_the_top_prompt_defaults_to_the_d15_winner() -> None:
 
 
 def test_the_top_prompt_shows_every_candidate_with_its_closure_size() -> None:
-    """The closure size is what the tiebreak used, so it is what makes the
-    choice obvious rather than a coin toss between two names."""
+    """The closure size is what the tiebreak used, so showing it turns a coin
+    toss into a real choice."""
     asker, _ = ask_about(TWO_TOPS)
 
     (ask,) = asker.asked
@@ -235,9 +221,7 @@ def test_choosing_a_different_top_is_what_comes_back() -> None:
     assert decisions == Decisions(top="soc_b")
 
 
-# --------------------------------------------------------------------------
 # UnclearTbStatus
-# --------------------------------------------------------------------------
 
 
 def test_the_tb_prompt_asks_one_file_at_a_time_defaulting_to_rtl() -> None:
@@ -249,7 +233,6 @@ def test_the_tb_prompt_asks_one_file_at_a_time_defaulting_to_rtl() -> None:
     assert "bench/monitor.sv" in first.question
     assert "bench/probe.sv" in second.question
     assert first.default == "rtl" and second.default == "rtl"
-    # The documented default is the non-testbench reading, in both directions.
     assert decisions.tb_overrides == (
         (ROOT / "bench" / "monitor.sv", TbDirective.RTL),
         (ROOT / "bench" / "probe.sv", TbDirective.RTL),
@@ -280,15 +263,12 @@ def test_both_ambiguity_types_are_answered_in_one_pass() -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # MixedLangFileType, and the gap it must not leave
-# --------------------------------------------------------------------------
 
 
 def test_a_mixed_language_file_type_is_handled_without_being_asked_about() -> None:
     """Resolve cannot build one until VHDL lands, and there is no file-type
-    override for an answer to feed back into, so the branch is inert by design
-    rather than by omission."""
+    override for an answer to feed into, so the branch is inert by design."""
     asker, decisions = ask_about(MixedLangFileType(path=ROOT / "a.vhd"))
 
     assert asker.asked == []
@@ -296,8 +276,7 @@ def test_a_mixed_language_file_type_is_handled_without_being_asked_about() -> No
 
 
 def test_an_unknown_ambiguity_type_is_a_crash_not_a_shrug() -> None:
-    """The guard behind the branch above: a fourth member of the union that
-    nobody handles is a user silently denied a say. It must not pass quietly."""
+    """An unhandled member of the union means a user silently denied a say."""
 
     @dataclass(frozen=True)
     class Invented:
@@ -307,9 +286,7 @@ def test_an_unknown_ambiguity_type_is_a_crash_not_a_shrug() -> None:
         ask_about(Invented(path=ROOT / "x.sv"))
 
 
-# --------------------------------------------------------------------------
 # the real asker, at the seam only
-# --------------------------------------------------------------------------
 
 
 def test_the_real_asker_renders_to_stderr_by_default() -> None:
@@ -319,9 +296,7 @@ def test_the_real_asker_renders_to_stderr_by_default() -> None:
     assert QuestionaryAsker()._stream is sys.stderr
 
 
-# --------------------------------------------------------------------------
-# the answers, fed back through the pipeline (B5)
-# --------------------------------------------------------------------------
+# the answers, fed back through the pipeline
 
 
 def run(fixture: str, **options) -> object:
@@ -348,8 +323,7 @@ def answered(fixture: str, *answers: str):
 
 
 def test_accepting_every_default_reproduces_the_yes_output_byte_for_byte() -> None:
-    """The determinism promise for the interactive path: prompting happens
-    outside the pipeline, so an all-defaults run is the ``--yes`` run."""
+    """Prompting happens outside the pipeline, so all defaults is ``--yes``."""
     assert answered("multiple_tops").text == run("multiple_tops").text
 
 
@@ -359,18 +333,15 @@ def test_a_chosen_top_reaches_the_manifest_and_silences_its_warning() -> None:
     assert result.model.top == "soc_b"
     assert "toplevel: soc_b" in result.text
     assert "rtl/soc_b.v" in result.text
-    # Asked and answered: warning the user about a choice they just made
-    # would be noise, and the ambiguity is spent.
     assert [w.code for w in result.model.warnings if w.code == "MultipleTops"] == []
     assert result.model.ambiguities == ()
 
 
 def unclear_tree(tmp_path: Path) -> Path:
-    """A tree with exactly one file the classifier cannot make its mind up
-    about.
+    """A tree with one file the classifier cannot make up its mind about.
 
-    `monitor` calls `$finish` but has a port, so it trips neither branch of
-    the rule: half the evidence, no filename match, no magic comment.
+    `monitor` calls `$finish` but has a port, so it trips neither branch: half
+    the evidence, no filename match, no magic comment.
     """
     (tmp_path / "chip.v").write_text(
         "module chip (input wire clk);\n  monitor u_monitor (.clk(clk));\nendmodule\n"
@@ -384,8 +355,7 @@ def unclear_tree(tmp_path: Path) -> Path:
 
 
 def test_an_unanswered_unclear_file_stays_rtl_and_says_so(tmp_path: Path) -> None:
-    """The documented default, and the warning every non-prompting path owes
-    the user in place of the question it did not ask."""
+    """The default, plus the warning a non-prompting path owes the user."""
     root = unclear_tree(tmp_path)
 
     result = generate(root)
@@ -410,14 +380,12 @@ def test_answering_testbench_moves_the_file_and_builds_a_sim_target(
     assert result.model.tb_top == "monitor"
     assert "toplevel: monitor\n" in result.text
     assert "mode: binary" in result.text
-    # Answered, so nothing is left to warn or ask about.
     assert result.model.ambiguities == ()
     assert [w.code for w in result.model.warnings if w.code == "UnclearTbStatus"] == []
 
 
 def test_re_resolving_does_not_re_scan_or_re_parse() -> None:
-    """B5's actual claim: Scan and Parse cannot change based on an answer, so
-    the second run reuses their results object-for-object."""
+    """Scan and Parse cannot change based on an answer."""
     first = run("multiple_tops")
 
     second = regenerate(first, GenerateOptions(top="soc_b"))

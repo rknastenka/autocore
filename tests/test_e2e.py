@@ -1,18 +1,15 @@
 """Golden-file end-to-end tests.
+"""Golden-file end-to-end tests.
 
-Every fixture directory runs through the real pipeline — Scan, Parse, Resolve,
-Emit — in ``--yes`` semantics (defaults, no defines) and is byte-compared
-against ``golden/<fixture>.core``. Fixtures are discovered, not listed, so
-adding a fixture without a golden fails here until the golden exists;
-regenerate deliberately with ``python tests/emit_fixtures.py tests/golden``
-and review the diff.
+Every fixture tree goes through the real pipeline in ``--yes`` mode and is
+byte-compared against ``golden/<fixture>.core``. Fixtures are discovered, not
+listed, so a new fixture fails here until its golden exists. Regenerate with
+``python tests/emit_fixtures.py tests/golden`` and review the diff.
 
-Byte comparison is the contract: anything below — key order, quoting,
-indentation, the trailing newline — is part of the promised output. The one
-normalized exception is the version inside the generated-by comment: a
-version bump must not invalidate every golden, so both sides have it folded
-to a fixed token here, and the line's exact format is asserted by a
-dedicated unit test in test_emit.py instead.
+Byte comparison is the contract, down to key order and indentation. The one
+exception is the version in the generated-by comment, folded to a fixed token
+on both sides so a version bump does not invalidate every golden. test_emit.py
+pins that line's exact format instead.
 """
 
 from __future__ import annotations
@@ -36,8 +33,7 @@ def _normalized(data: bytes) -> bytes:
 
 
 def test_every_fixture_is_discovered() -> None:
-    # Guards the discovery itself: an empty parametrize list would pass
-    # silently if the fixtures directory moved.
+    # An empty parametrize list would pass silently if fixtures/ ever moved.
     assert FIXTURE_NAMES
 
 
@@ -45,7 +41,7 @@ def test_every_fixture_is_discovered() -> None:
 def test_fixture_output_matches_its_golden_up_to_the_version(name: str) -> None:
     golden = GOLDEN / f"{name}.core"
     assert golden.is_file(), (
-        f"no golden for fixture '{name}' — generate it with "
+        f"no golden for fixture '{name}': generate it with "
         "'python tests/emit_fixtures.py tests/golden' and review it"
     )
 

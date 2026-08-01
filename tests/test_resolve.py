@@ -1,12 +1,9 @@
-"""Unit tests for Stage 3 - Resolve.
+"""Unit tests for Stage 3, Resolve.
 
-Two kinds of test share this file. The fixture tests run the real pipeline —
-Scan then Parse then Resolve — over the on-disk trees, because Resolve's
-contract is only meaningful against what the earlier stages actually produce.
-The graph-shape tests (tops, duplicates, cycles, ties, include matching) build
-`ScanResult` / `ParseResult` pairs by hand instead: `resolve` never touches
-the filesystem, so the shape under test is visible right next to the
-assertion about it, and no RTL needs to exist.
+The fixture tests run the real pipeline over the on-disk trees. The graph-shape
+tests (tops, duplicates, cycles, ties, include matching) build `ScanResult` /
+`ParseResult` pairs by hand instead: `resolve` never touches the filesystem, so
+the shape under test sits next to the assertion about it.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 ROOT = Path("/proj")
 
-#: No evidence at all, and the strong-evidence branch, as shorthands below.
+#: No evidence at all, and enough for the evidence branch.
 NONE_SEEN = TbEvidence()
 STRONG = TbEvidence(has_finish_or_stop=True, empty_port_list=True)
 
@@ -122,18 +119,15 @@ def by_code(model: ProjectModel, code: str) -> list:
 def tops(*candidates: tuple[str, int]) -> MultipleTops:
     """A `MultipleTops` from ``(name, closure size)`` pairs.
 
-    The sizes are part of the assertion, not noise: they are what the
-    top-detection fallback weighed and what the prompt shows, so a candidate
-    list that stops carrying them stops being enough to build a prompt from.
+    The sizes are part of the assertion: they are what the tiebreak weighed and
+    what the prompt shows.
     """
     return MultipleTops(
         candidates=tuple(TopCandidate(name, size) for name, size in candidates)
     )
 
 
-# --------------------------------------------------------------------------
 # fixtures through the real pipeline
-# --------------------------------------------------------------------------
 
 
 def test_single_module_fixture() -> None:
@@ -158,8 +152,7 @@ def test_multi_file_hierarchy_fixture() -> None:
         "rtl/core/regfile.sv",
         "rtl/top.sv",
     )
-    # Dependencies first, ties alphabetical: the header and both leaves are
-    # all ready at once, so they come out in path order, then the top.
+    # Dependencies first, ties alphabetical.
     assert rel_order(model.compile_order, root) == (
         "include/defs.svh",
         "rtl/core/alu.v",
@@ -180,38 +173,34 @@ def test_external_prims_fixture() -> None:
     (warning,) = by_code(model, "ExternalReference")
     assert warning.path == root / "rtl" / "chip.v"
     assert "SB_PLL40_CORE" in warning.message
-    # External refs never cost a file: both sources stay in the closure.
     assert rel_set(model.rtl, root) == ("rtl/alu_core.v", "rtl/chip.v")
     assert by_code(model, "ExcludedFromRtl") == []
     assert model.ambiguities == ()
 
 
-def test_multiple_tops_fixture_applies_the_d15_fallback() -> None:
+def test_multiple_tops_fixture_applies_the_fallback() -> None:
     root = FIXTURES / "multiple_tops"
     model = run(root)
 
     # Neither candidate matches the directory name and both closures are two
-    # files (each soc plus the shared alu), so the tie breaks alphabetically.
+    # files, so the tie breaks alphabetically.
     assert model.top == "soc_a"
     assert model.ambiguities == (tops(("soc_a", 2), ("soc_b", 2)),)
     (warning,) = by_code(model, "MultipleTops")
     assert "soc_a" in warning.message and "soc_b" in warning.message
 
-    # The loser falls outside the closure and is reported by name.
     assert rel_set(model.rtl, root) == ("rtl/common_alu.v", "rtl/soc_a.v")
     (excluded,) = by_code(model, "ExcludedFromRtl")
     assert excluded.details == ("rtl/soc_b.v",)
-    # Excluded from rtl, not from the evidence: its facts are still there.
     assert any(f.path.name == "soc_b.v" for f in model.files)
 
 
 def test_the_closure_follows_the_active_define(tmp_path: Path) -> None:
     """The leaf the define switches off falls outside the closure.
 
-    An `ifdef`-disabled module is referenced by nobody, which makes it a top
-    *candidate* — MultipleTops fires here by construction, and the
-    closure-size fallback is what keeps the intended top on top: `a_top`
-    drags two files behind it, the orphaned leaf only itself.
+    A disabled module is referenced by nobody, which makes it a top candidate,
+    so MultipleTops fires here by construction. The closure-size fallback keeps
+    `a_top` on top: it drags two files behind it, the orphan only itself.
     """
     build(
         tmp_path,
@@ -241,9 +230,8 @@ def test_the_closure_follows_the_active_define(tmp_path: Path) -> None:
 
 
 def test_ifdef_heavy_candidates_depend_on_the_define() -> None:
-    """The switched-off leaf in ifdef_heavy is a candidate, per the rule —
-    but its closure is one file against `top`'s four, so the closure-size
-    fallback keeps `top` on top in both parses."""
+    """The switched-off leaf is a candidate by the rule, but its closure is one
+    file against `top`'s four, so `top` wins in both parses."""
     root = FIXTURES / "ifdef_heavy"
 
     without = run(root)
@@ -256,9 +244,9 @@ def test_ifdef_heavy_candidates_depend_on_the_define() -> None:
     assert "closure" in by_code(without, "MultipleTops")[0].message
 
 
-def test_with_testbench_fixture_exercises_all_of_d16() -> None:
-    """Every classification branch decides one file in this tree, and the two magic
-    comments pull in opposite directions (see the fixture's README)."""
+def test_with_testbench_fixture_exercises_every_classification_branch() -> None:
+    """Every branch decides one file in this tree, and the two magic comments
+    pull in opposite directions (see the fixture's README)."""
     root = FIXTURES / "with_testbench"
     model = run(root)
 
@@ -273,8 +261,6 @@ def test_with_testbench_fixture_exercises_all_of_d16() -> None:
     )
     # `rtl/self_test.v` matches `*_test.*` and is RTL anyway: the comment wins.
     assert rel_set(model.rtl, root) == ("rtl/alu.v", "rtl/chip.v", "rtl/self_test.v")
-    # `chip_tb` instantiates `chip`, so its closure covers all of rtl; the tb
-    # fileset is what is left after subtracting it.
     assert rel_order(model.tb_compile_order, root) == (
         "bench/clkgen.sv",
         "bench/scoreboard.sv",
@@ -287,8 +273,7 @@ def test_the_tb_glob_flag_reaches_the_fixture_through_resolve() -> None:
     tree = scan(root)
     model = resolve(tree, parse_sources(tree), tb_globs=("*_nothing.*",))
 
-    # `chip_tb.sv` loses the filename rule but keeps its strong evidence;
-    # the two magic comments are untouched either way.
+    # `chip_tb.sv` loses the filename rule but keeps its strong evidence.
     assert rel_set(model.testbenches, root) == (
         "bench/chip_tb.sv",
         "bench/clkgen.sv",
@@ -302,16 +287,12 @@ def test_broken_file_fixture_keeps_its_parse_warning() -> None:
 
     assert model.top == "good"
     assert rel_set(model.rtl, root) == ("rtl/good.v",)
-    # The parse failure is carried through, the unparseable file is named as
-    # excluded, and good.v's dangling instantiation is an external ref.
     assert len(by_code(model, "ParseFailed")) == 1
     assert "rtl/broken.sv" in by_code(model, "ExcludedFromRtl")[0].details
     assert model.external_refs == frozenset({"counter"})
 
 
-# --------------------------------------------------------------------------
-# step 1 - symbol table and duplicates
-# --------------------------------------------------------------------------
+# symbol table and duplicates
 
 
 def test_duplicate_declaration_first_sorted_path_wins() -> None:
@@ -324,14 +305,11 @@ def test_duplicate_declaration_first_sorted_path_wins() -> None:
     (warning,) = by_code(model, "DuplicateDeclaration")
     assert warning.path == ROOT / "two/alu.v"
     assert "one/alu.v" in warning.message
-    # The winner carries the edge, so the loser falls outside the closure.
     assert rel_set(model.rtl, ROOT) == ("one/alu.v", "top.v")
     assert "two/alu.v" in by_code(model, "ExcludedFromRtl")[0].details
 
 
-# --------------------------------------------------------------------------
-# step 2 - edges and external refs
-# --------------------------------------------------------------------------
+# edges and external refs
 
 
 def test_an_imported_package_is_a_dependency_not_a_top() -> None:
@@ -353,14 +331,11 @@ def test_an_undeclared_import_is_an_external_ref_too() -> None:
     assert warning.path == ROOT / "top.sv"
 
 
-# --------------------------------------------------------------------------
-# step 3 - testbench classification, in full
-# --------------------------------------------------------------------------
+# testbench classification
 
 
 def test_tb_filenames_are_classified_before_top_detection() -> None:
-    """Without classification `tb_chip` would be the sole top; with it, a
-    testbench neither becomes a candidate nor disqualifies one."""
+    """Without classification `tb_chip` would be the sole top."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("tb_chip.sv", declared=("tb_chip",), instantiated=("chip",)),
@@ -369,14 +344,13 @@ def test_tb_filenames_are_classified_before_top_detection() -> None:
     assert model.top == "chip"
     assert rel_set(model.testbenches, ROOT) == ("tb_chip.sv",)
     assert rel_set(model.rtl, ROOT) == ("chip.v",)
-    # A testbench outside the rtl closure is where it belongs — not "excluded".
+    # A testbench outside the rtl closure is where it belongs, not "excluded".
     assert by_code(model, "ExcludedFromRtl") == []
 
 
 def test_all_four_filename_patterns_and_their_case_insensitivity() -> None:
-    """`testbench.*` is what picorv32 calls its six tool-specific
-    benches, and the evidence half
-    cannot reach them because they do not parse."""
+    """`testbench.*` is what picorv32 calls its six tool-specific benches, and
+    the evidence half cannot reach them because they do not parse."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("chip_tb.v", declared=("chip_tb",), instantiated=("chip",)),
@@ -421,12 +395,9 @@ def test_strong_evidence_classifies_a_file_no_pattern_matches() -> None:
 
 
 def test_half_the_evidence_classifies_nothing_and_is_reported_as_unclear() -> None:
-    """Partial evidence trips neither classification branch, so it becomes data —
-    an `UnclearTbStatus`. Nothing here prompts; that gate is `interact.py`'s.
-
-    The warning beside the ambiguity is what the non-prompting paths owe the
-    user: `--yes` and a pipe both apply the documented default silently
-    otherwise."""
+    """Partial evidence trips neither branch, so it becomes an
+    `UnclearTbStatus`. Nothing here prompts, that gate is `interact.py`'s; the
+    warning beside it is what `--yes` and a pipe owe the user instead."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff(
@@ -446,9 +417,7 @@ def test_half_the_evidence_classifies_nothing_and_is_reported_as_unclear() -> No
     assert model.top == "monitor"
 
 
-# --------------------------------------------------------------------------
-# step 3 - tb_overrides: an answered UnclearTbStatus, fed back in
-# --------------------------------------------------------------------------
+# tb_overrides: an answered UnclearTbStatus, fed back in
 
 
 def unclear(path: str, name: str) -> FileFacts:
@@ -470,15 +439,13 @@ def test_an_override_can_force_a_file_to_be_a_testbench() -> None:
 
     assert rel_set(model.testbenches, ROOT) == ("monitor.sv",)
     assert model.tb_top == "monitor"
-    # Answered, so neither the ambiguity nor the warning survives the re-run.
     assert model.ambiguities == ()
     assert by_code(model, "UnclearTbStatus") == []
     assert model.top == "chip"
 
 
 def test_an_override_can_force_a_file_to_be_rtl() -> None:
-    """The same shape as the default, but chosen rather than assumed — which
-    is the whole difference the warning is there to mark."""
+    """The same shape as the default, but chosen rather than assumed."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         unclear("monitor.sv", "monitor"),
@@ -504,9 +471,8 @@ def test_an_override_only_touches_the_path_it_names() -> None:
 
 
 def test_an_override_outranks_a_magic_comment() -> None:
-    """They cannot collide in practice — a file carrying a comment is never
-    unclear, so it is never asked about — but the precedence has to be
-    decided rather than accidental: the newer statement of intent wins."""
+    """They cannot really collide, since a file carrying a comment is never
+    asked about, but the precedence is decided rather than accidental."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("clkgen.v", declared=("clkgen",), directive=TbDirective.TB),
@@ -534,9 +500,7 @@ def test_strong_evidence_is_never_unclear() -> None:
     assert model.ambiguities == ()
 
 
-# --------------------------------------------------------------------------
-# step 3 - magic comments override both directions
-# --------------------------------------------------------------------------
+# magic comments override both directions
 
 
 def test_the_tb_comment_beats_a_name_and_evidence_that_say_nothing() -> None:
@@ -588,9 +552,7 @@ def test_a_file_carrying_both_comments_warns_and_falls_through() -> None:
     assert model.top == "chip"
 
 
-# --------------------------------------------------------------------------
-# step 3 - --tb-glob replaces the filename patterns
-# --------------------------------------------------------------------------
+# --tb-glob replaces the filename patterns
 
 
 def test_tb_glob_replaces_the_defaults_rather_than_extending_them() -> None:
@@ -626,9 +588,7 @@ def test_tb_glob_never_disables_the_evidence_branch_or_the_comments() -> None:
     assert rel_set(model.testbenches, ROOT) == ("clkgen.v", "harness.v")
 
 
-# --------------------------------------------------------------------------
 # the testbench top and the tb fileset
-# --------------------------------------------------------------------------
 
 
 def tb_order(model: ProjectModel, root: Path = ROOT) -> tuple[str, ...]:
@@ -649,8 +609,7 @@ def test_the_tb_top_is_the_testbench_nobody_else_instantiates() -> None:
 
 
 def test_a_bench_instantiating_the_rtl_top_stays_a_candidate() -> None:
-    """Only testbench-to-testbench references disqualify: instantiating the
-    DUT is what a bench is *for*."""
+    """Only testbench-to-testbench references disqualify."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("chip_tb.v", declared=("chip_tb",), instantiated=("chip",)),
@@ -660,9 +619,8 @@ def test_a_bench_instantiating_the_rtl_top_stays_a_candidate() -> None:
 
 
 def test_the_tb_fileset_is_the_closure_minus_whatever_rtl_already_holds() -> None:
-    """`chip_tb`'s closure runs right through the rtl top and out the other
-    side, but the tb fileset must
-    not carry the rtl closure a second time."""
+    """`chip_tb`'s closure runs right through the rtl top, but the tb fileset
+    must not carry the rtl closure a second time."""
     model = model_of(
         ff("rtl/chip.v", declared=("chip",), instantiated=("alu",)),
         ff("rtl/alu.v", declared=("alu",)),
@@ -683,7 +641,7 @@ def test_a_tree_with_no_testbench_has_no_sim_target_at_all() -> None:
     assert model.tb_compile_order == ()
 
 
-def test_several_testbench_tops_reuse_the_d15_fallback_with_a_warning() -> None:
+def test_several_testbench_tops_reuse_the_fallback_with_a_warning() -> None:
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("a_tb.v", declared=("a_tb",)),
@@ -695,18 +653,16 @@ def test_several_testbench_tops_reuse_the_d15_fallback_with_a_warning() -> None:
     assert model.tb_top == "z_tb"
     (warning,) = by_code(model, "MultipleTestbenchTops")
     assert "a_tb" in warning.message and "closure" in warning.message
-    # Not one of the three ambiguity types — and not a prompt either: the
-    # losers travel as alternatives, for Emit to flag in the file.
-    assert model.ambiguities == ()
-    # The losing *candidates*, not every bench: `helper` was never in the
+    # Not an ambiguity type and not a prompt: the losers travel as
+    # alternatives for Emit to flag in the file. `helper` was never in the
     # running, because `z_tb` instantiates it.
+    assert model.ambiguities == ()
     assert model.tb_top_alternatives == ("a_tb",)
 
 
 def test_a_testbench_outside_the_tb_top_closure_is_dropped_with_a_warning() -> None:
-    """It is still classified — which is what keeps it out of rtl — it just
-    has no place in a sim target built from one toplevel. Being defensible
-    does not make it silent: the file is in neither fileset, so it is named."""
+    """It stays classified, which is what keeps it out of rtl, but it has no
+    place in a sim target built from one toplevel."""
     model = model_of(
         ff("chip.v", declared=("chip",)),
         ff("a_tb.v", declared=("a_tb",), instantiated=("chip", "helper")),
@@ -720,7 +676,6 @@ def test_a_testbench_outside_the_tb_top_closure_is_dropped_with_a_warning() -> N
     (warning,) = by_code(model, "ExcludedFromTb")
     assert warning.details == ("z_tb.v",)
     assert "'a_tb'" in warning.message
-    # It was never a candidate for rtl, so it is not "excluded" from there.
     assert by_code(model, "ExcludedFromRtl") == []
 
 
@@ -744,7 +699,6 @@ def test_mutually_instantiating_testbenches_fall_back_alphabetically() -> None:
     assert model.tb_top == "a_tb"
     (warning,) = by_code(model, "NoTestbenchTop")
     assert "'a_tb'" in warning.message
-    # A knot of benches is as much a guess as several free candidates are.
     assert model.tb_top_alternatives == ("b_tb",)
 
 
@@ -754,8 +708,7 @@ def test_a_testbench_that_declares_nothing_yields_no_sim_target() -> None:
     assert rel_set(model.testbenches, ROOT) == ("chip_tb.v",)
     assert model.tb_top == ""
     assert model.tb_compile_order == ()
-    # No sim target to belong to, so it is dropped — and said so. The loudest
-    # version of the case above: every classified bench falls out at once.
+    # No sim target to belong to, so every classified bench falls out at once.
     (warning,) = by_code(model, "ExcludedFromTb")
     assert "no sim toplevel" in warning.message
     assert warning.details == ("chip_tb.v",)
@@ -779,12 +732,10 @@ def test_a_header_the_bench_alone_includes_is_flagged_in_the_tb_fileset() -> Non
     assert model.include_dirs == (ROOT / "bench",)
 
 
-# --------------------------------------------------------------------------
-# step 4 - top detection and its fallback
-# --------------------------------------------------------------------------
+# top detection and the tiebreak
 
 
-def test_d15_prefers_the_directory_name_match() -> None:
+def test_the_directory_name_match_wins() -> None:
     root = Path("/proj/chip_b")
     model = model_of(
         ff("a.v", declared=("chip_a",), root=root),
@@ -798,7 +749,7 @@ def test_d15_prefers_the_directory_name_match() -> None:
     assert "directory" in by_code(model, "MultipleTops")[0].message
 
 
-def test_d15_directory_match_is_sanitized() -> None:
+def test_the_directory_match_is_sanitized() -> None:
     root = Path("/proj/My-Chip")
     model = model_of(
         ff("a.v", declared=("alpha_top",), root=root),
@@ -809,7 +760,7 @@ def test_d15_directory_match_is_sanitized() -> None:
     assert model.top == "my_chip"
 
 
-def test_d15_prefers_the_largest_closure_over_the_alphabet() -> None:
+def test_the_largest_closure_beats_the_alphabet() -> None:
     model = model_of(
         ff("a.v", declared=("a_orphan",)),
         ff("z.v", declared=("z_top",), instantiated=("leaf",)),
@@ -822,7 +773,7 @@ def test_d15_prefers_the_largest_closure_over_the_alphabet() -> None:
     assert rel_set(model.rtl, ROOT) == ("leaf.v", "z.v")
 
 
-def test_d15_directory_name_still_beats_a_larger_closure() -> None:
+def test_the_directory_name_still_beats_a_larger_closure() -> None:
     root = Path("/proj/small")
     model = model_of(
         ff("small.v", declared=("small",), root=root),
@@ -835,7 +786,7 @@ def test_d15_directory_name_still_beats_a_larger_closure() -> None:
     assert "directory" in by_code(model, "MultipleTops")[0].message
 
 
-def test_d15_equal_closures_tie_break_alphabetically() -> None:
+def test_equal_closures_tie_break_alphabetically() -> None:
     model = model_of(
         ff("m.v", declared=("m_top",), instantiated=("m_leaf",)),
         ff("m_leaf.v", declared=("m_leaf",)),
@@ -848,8 +799,7 @@ def test_d15_equal_closures_tie_break_alphabetically() -> None:
 
 
 def test_a_forced_top_skips_detection_and_its_ambiguity() -> None:
-    """The --top escape hatch: resolve takes the caller's word, so the loser
-    of a would-be MultipleTops simply falls out of the closure."""
+    """The --top escape hatch: resolve takes the caller's word."""
     model = model_of(
         ff("a.v", declared=("a_top",)),
         ff("b.v", declared=("b_top",), instantiated=("leaf",)),
@@ -878,9 +828,8 @@ def test_zero_candidates_fall_back_alphabetically_with_a_warning() -> None:
 
 
 def test_intra_file_instantiation_does_not_disqualify() -> None:
-    """File granularity, deliberately: this is how picorv32 keeps `picorv32`
-    on the candidate list next to the wrappers that instantiate it from the
-    same file."""
+    """File granularity, on purpose: this is how picorv32 keeps `picorv32` on
+    the candidate list next to the wrappers that instantiate it."""
     model = model_of(
         ff("core.v", declared=("core", "core_axi"), instantiated=("core",)),
     )
@@ -899,9 +848,7 @@ def test_a_recursive_module_stays_a_candidate() -> None:
     assert by_code(model, "CircularDependency") == []
 
 
-# --------------------------------------------------------------------------
 # the rtl closure
-# --------------------------------------------------------------------------
 
 
 def test_files_outside_the_closure_are_named_in_one_warning() -> None:
@@ -913,14 +860,13 @@ def test_files_outside_the_closure_are_named_in_one_warning() -> None:
         scanned=("never_parsed.v",),
     )
 
-    # The disconnected z_unit is a candidate too; its closure ties with
-    # top's at two files, the tie breaks alphabetically in top's favour,
-    # and the whole island is excluded.
+    # The disconnected z_unit ties with top at two files, the tie breaks
+    # alphabetically, and the whole island is excluded.
     assert model.top == "top"
     assert rel_set(model.rtl, ROOT) == ("top.v", "used.v")
     (warning,) = by_code(model, "ExcludedFromRtl")
-    # The count is the message; the names are the details, so that a tree with
-    # 18 of them (picorv32) still reads as one line on stderr.
+    # The count is the message and the names are the details, so picorv32's 18
+    # still read as one line on stderr.
     assert warning.message.startswith("3 file(s) not reachable")
     assert warning.details == ("never_parsed.v", "z_leaf.v", "z_unit.v")
 
@@ -937,9 +883,7 @@ def test_an_unused_header_is_excluded_and_named() -> None:
     assert by_code(model, "ExcludedFromRtl")[0].details == ("hdr/unused.svh",)
 
 
-# --------------------------------------------------------------------------
-# step 5 - compile order
-# --------------------------------------------------------------------------
+# compile order
 
 
 def test_dependencies_come_before_dependents_ties_alphabetical() -> None:
@@ -954,8 +898,7 @@ def test_dependencies_come_before_dependents_ties_alphabetical() -> None:
 
 
 def test_a_freed_file_can_overtake_an_already_ready_one() -> None:
-    """One node at a time: emitting `a.v` unblocks `b.v`, which sorts before
-    the always-ready `z.v`."""
+    """Emitting `a.v` unblocks `b.v`, which sorts before the ready `z.v`."""
     model = model_of(
         ff("top.v", declared=("top",), instantiated=("b", "z")),
         ff("a.v", declared=("a",)),
@@ -995,9 +938,7 @@ def test_two_independent_cycles_cost_two_warnings() -> None:
     assert order.index("top.v") == len(order) - 1
 
 
-# --------------------------------------------------------------------------
-# step 6 - include resolution
-# --------------------------------------------------------------------------
+# include resolution
 
 
 def test_includes_match_by_basename_wherever_the_header_lives() -> None:
@@ -1009,8 +950,6 @@ def test_includes_match_by_basename_wherever_the_header_lives() -> None:
     assert rel_set(model.include_files, ROOT) == ("hdr/defs.svh",)
     assert model.include_dirs == (ROOT / "hdr",)
     assert by_code(model, "UnresolvedInclude") == []
-    # The matched header joined the closure over the include edge alone, and
-    # a header without facts still sorts ahead of its includer.
     assert rel_order(model.compile_order, ROOT) == ("hdr/defs.svh", "rtl/top.v")
 
 
@@ -1049,8 +988,6 @@ def test_a_module_declaring_header_is_demoted_to_a_source() -> None:
         include_candidates=("prims.vh",),
     )
 
-    # It reaches rtl over the instantiation edge like any source file, and
-    # contributes nothing to include_files or include_dirs.
     assert rel_set(model.rtl, ROOT) == ("prims.vh", "top.v")
     assert model.include_files == frozenset()
     assert model.include_dirs == ()
@@ -1058,10 +995,9 @@ def test_a_module_declaring_header_is_demoted_to_a_source() -> None:
 
 
 def test_including_a_demoted_header_is_reported_not_resolved() -> None:
-    """The strict reading of the demotion rule: a header that declares modules
-    left the candidate pool, so an `include` naming it no longer matches and
-    must be reported rather than silently dropped. The file still reaches the
-    closure — over the instantiation edge, like the source file it now is."""
+    """A header that declares modules has left the candidate pool, so an
+    `include` naming it is reported rather than dropped. It still reaches the
+    closure over the instantiation edge, like the source file it now is."""
     model = model_of(
         ff("prims.vh", declared=("prim",)),
         ff("top.v", declared=("top",), instantiated=("prim",), includes=("prims.vh",)),
@@ -1074,9 +1010,7 @@ def test_including_a_demoted_header_is_reported_not_resolved() -> None:
     assert model.include_files == frozenset()
 
 
-# --------------------------------------------------------------------------
 # edges of the input space
-# --------------------------------------------------------------------------
 
 
 def test_an_empty_tree_resolves_to_an_empty_model() -> None:
@@ -1090,9 +1024,7 @@ def test_an_empty_tree_resolves_to_an_empty_model() -> None:
     assert model.ambiguities == ()
 
 
-# --------------------------------------------------------------------------
 # ordering and determinism
-# --------------------------------------------------------------------------
 
 
 def test_warnings_are_sorted_by_path_then_code() -> None:

@@ -74,7 +74,7 @@ class QuestionaryAsker:
     """The real asker: questionary, rendered to stderr.
 
     questionary is imported inside `select` rather than at module scope so the
-    overwhelmingly common path — a non-interactive run — never pays for a
+    overwhelmingly common path, a non-interactive run, never pays for a
     prompt-toolkit import it will not use.
     """
 
@@ -127,7 +127,7 @@ def decide(
 ) -> Decisions:
     """Ask about `model`'s ambiguities, or return the empty `Decisions`.
 
-    `root` only shapes the wording of the questions — paths are shown relative
+    `root` only shapes the wording of the questions, paths are shown relative
     to the scanned tree, never as the absolute location of a checkout.
 
     The gate is spelled out once, right below, and is the only place in
@@ -211,8 +211,8 @@ def _ask_tb_status(asker: Asker, ambiguity: UnclearTbStatus, root: Path) -> TbDi
     answer = asker.select(
         f"{_rel(ambiguity.path, root)} looks like it might be a testbench. What is it?",
         [
-            Choice(_RTL, "RTL — part of the design"),
-            Choice(_TB, "testbench — simulation only"),
+            Choice(_RTL, "RTL: part of the design"),
+            Choice(_TB, "testbench: simulation only"),
         ],
         default=_RTL,
     )

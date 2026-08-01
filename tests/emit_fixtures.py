@@ -1,16 +1,11 @@
 """Emit every fixture's ``.core``: ``python tests/emit_fixtures.py OUTDIR``.
 
-Two callers, one code path:
+Two callers, one code path: regenerating the goldens after a deliberate output
+change (``python tests/emit_fixtures.py tests/golden``, then review the diff),
+and the CI determinism job, which runs this twice under two ``PYTHONHASHSEED``
+values and compares the output directories with ``diff -r``.
 
-* Regenerating the goldens after a deliberate output change:
-  ``python tests/emit_fixtures.py tests/golden`` — then review the diff.
-* The CI determinism job runs this twice under two different
-  ``PYTHONHASHSEED`` values and byte-compares the two output directories
-  with ``diff -r``. Comparing run against run is the point: it catches an
-  unsorted set leaking into the output even if both runs happened to
-  satisfy some weaker check.
-
-Not a test module — pytest never collects it (no ``test_`` prefix).
+Not a test module; pytest never collects it (no ``test_`` prefix).
 """
 
 from __future__ import annotations

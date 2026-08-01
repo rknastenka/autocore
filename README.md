@@ -166,7 +166,7 @@ autocore init . --define SYNTHESIS --define XLEN=32 -v
 `-v` prints the defines in effect, which is worth checking before believing a
 suspiciously small `rtl` fileset. The same applies to `` `ifdef ``-guarded
 instantiations: they are collected if and only if the define is active, so
-one run describes one configuration of the tree — the one you asked for.
+one run describes one configuration of the tree, the one you asked for.
 
 Module names built out of macros are beyond the escape hatch. Nothing short
 of elaboration can resolve those, and auto-core does not elaborate.
@@ -207,8 +207,8 @@ until a human adds
       - fusesoc:utils:vlog_tb_utils
 ```
 
-to the testbench fileset. Anything your design pulls in from another core —
-a shared bus library, a vendor package, a CPU you did not write — needs the
+to the testbench fileset. Anything your design pulls in from another core,
+a shared bus library, a vendor package, a CPU you did not write, needs the
 same one-line edit.
 
 ### Testbench classification is a rule, not an understanding

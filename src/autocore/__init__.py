@@ -14,7 +14,6 @@ interactive flows, where a user answers a question and the project needs to be
 re-resolved without re-reading the whole tree.
 """
 
-
 from __future__ import annotations
 
 from dataclasses import dataclass

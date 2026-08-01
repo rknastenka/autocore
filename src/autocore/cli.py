@@ -99,7 +99,7 @@ def _defines(values: list[str] | None) -> list[str] | None:
 
     A malformed define is a usage error (exit 2) rather than something to
     forward: slang takes predefines as opaque strings, so ``--define 2=3`` or
-    a shell-mangled ``--define "FOO BAR"`` would not fail — it would silently
+    a shell-mangled ``--define "FOO BAR"`` would not fail; it would silently
     define nothing, and the missing macro would then show up as an unexplained
     parse failure or a module that lost half its instantiations. Failing at
     the flag is the only place the cause is still visible.
@@ -225,10 +225,10 @@ def init(
 ) -> None:
     """Scan `PATH` and generate one FuseSoC CAPI2 `.core` manifest.
 
-This is the main user-facing command. It runs the pipeline, optionally asks
-about ambiguities, prints warnings and status information to stderr, and then
-either writes the result to a file or prints it to stdout under `--dry-run`.
-"""
+    This is the main user-facing command. It runs the pipeline, optionally asks
+    about ambiguities, prints warnings and status information to stderr, and then
+    either writes the result to a file or prints it to stdout under `--dry-run`.
+    """
     if verbose and quiet:
         raise typer.BadParameter("--verbose and --quiet exclude each other")
 
@@ -303,7 +303,7 @@ def _apply_answers(
     """Offer `result`'s ambiguities to the user and re-resolve if they chose.
 
     Whether anything is actually asked is `interact.decide`'s call, not this
-    module's — the gate lives in one place and this is not it. An empty
+    module's, the gate lives in one place and this is not it. An empty
     `Decisions` means nothing was asked or nothing was changed, and the first
     run stands untouched, which is why ``--yes`` output stays byte-identical
     to the goldens. Only Resolve and Emit re-run; the tree is read once.
@@ -331,7 +331,7 @@ def _upward_path_warnings(
     path raises a `FutureWarning` from `Core.export` saying it "is not within
     the directory containing the core file [...] and will be an error in a
     future FuseSoC version". Nothing is broken today and the default output is
-    never affected — ``PATH/<name>.core`` sits above everything it lists — so
+    never affected, ``PATH/<name>.core`` sits above everything it lists, so
     this is a warning about a choice, made where the choice is made, and not
     part of the model any library caller shares.
     """
@@ -364,7 +364,7 @@ def _warning_lines(
     """Render `warnings` for stderr, grouped unless `verbose`.
 
     Under ``-v`` every warning gets its own line and every detail an indented
-    one beneath it — nothing is summarised, because that is what the flag is
+    one beneath it, nothing is summarised, because that is what the flag is
     for. Otherwise a code occurring `WARNING_GROUP_THRESHOLD` times or more
     collapses to one counted line carrying the first of its messages as the
     example, and details collapse to a pointer at ``-v``.
