@@ -2,8 +2,50 @@
 
 Single-file and syntax-level: one `SyntaxTree` per source file, no elaboration,
 no compilation unit shared between files. A module whose name comes from a macro
-defined in a *different* file is therefore invisible. That is a stated
-limitation of auto-core, and `--define` is the escape hatch.
+defined in another file is therefore invisible. That is a stated limitation of
+autocore, and `--define` is the escape hatch.
+
+Three details of the pyslang API are worth knowing before touching the code
+below:
+
+* `SyntaxTree.fromFile` takes its arguments positionally; keyword arguments
+  are rejected.
+* Children are reached by index, `len(node)` then `node[i]`, and that order is
+  source order, the same in every process.
+* `fileName.valueText` on an include directive keeps its delimiters, so
+  `` `include "defs.svh" `` reads back as `'"defs.svh"'`. The model wants the
+  target as written with quotes stripped, which is `_strip_delimiters`.
+
+Includes are collected along two paths. Resolved ones come from
+`tree.getIncludeDirectives()`; unresolved ones never appear there, but their
+`IncludeDirective` syntax survives in the trivia attached to the next real
+token, so the trivia scan recovers those. The union is what a file "includes",
+whether or not the header was found. Both paths report transitive includes: a
+header that itself includes another header contributes both. That is slang's
+behaviour, and it suits us, because Resolve turns these strings into
+`include_dirs` and every directory in the chain has to be listed for the
+emitted core to compile.
+
+Testbench evidence and magic comments both come out of the same walk. The
+three `TbEvidence` bits are structural: a ``$finish``/``$stop`` system call
+anywhere, a module declared with an empty port list, and a body whose `initial`
+blocks are at least as numerous as its `always` blocks and continuous
+assignments. Evidence only; classification happens in Resolve.
+`` // autocore: tb `` and `` // autocore: rtl `` are user directives rather
+than evidence, and they ride the same trivia scan the unresolved includes do.
+One wrinkle: slang folds a comment written directly above a preprocessor
+directive into that directive's trivia, where it never reaches a real token,
+so the scan recurses through directive syntax. Testbenches commonly open with
+a magic comment above `` `timescale ``.
+
+Include search paths are a backend property, not a per-file argument.
+`SvSlangBackend.for_tree` seeds them from the header directories Scan already
+found. Without that, a tree that keeps its headers in `include/` and its sources
+in `rtl/` would fail to resolve every `` `include ``, every macro from those
+headers would become an `UnknownDirective` error, and every file in the tree
+would be classified as unparseable. Reading a header a file explicitly asked
+for does not amount to sharing a compilation unit, so the single-file rule
+still holds.
 """
 
 from __future__ import annotations
@@ -36,31 +78,30 @@ __all__ = [
     "SvSlangBackend",
 ]
 
-#: What this backend reads. `.vh` is Verilog and `.svh` is SystemVerilog by
-#: extension; slang parses both the same way.
+# What this backend reads. `.vh` is Verilog and `.svh` is SystemVerilog by
+# extension; slang parses both the same way.
 SUPPORTED_LANGUAGES: frozenset[Lang] = frozenset({Lang.VERILOG, Lang.SYSTEMVERILOG})
 
-#: Error-severity diagnostics that do **not** mean "this file failed to parse".
-#:
-#: `CouldNotOpenIncludeFile` is the only one, and it has to be named here
-#: because pyslang reports it at *error* severity while everything about it is
-#: recoverable: parsing continues past a missing header, and Resolve gets a
-#: second chance at the target by matching basenames against the scanned tree.
-#: Treating it like the other errors would classify every file with an
-#: out-of-tree header as unparseable. Severity alone cannot tell the two apart,
-#: so the exception is by name.
+# Error-severity diagnostics that do not mean "this file failed to parse".
+#
+# `CouldNotOpenIncludeFile` is the only one. pyslang reports it at error
+# severity, but it is recoverable: parsing continues past a missing header,
+# and Resolve gets a second chance at the target by matching basenames against
+# the scanned tree. Treating it like the other errors would classify every
+# file with an out-of-tree header as unparseable, and severity alone cannot
+# tell the two apart, so the exception is by name.
 TOLERATED_DIAGNOSTICS: frozenset[Any] = frozenset(
     {pyslang.Diags.CouldNotOpenIncludeFile}
 )
 
-#: Diagnostics quoted in a `ParseFailed` warning before it says "and N more".
+# Diagnostics quoted in a `ParseFailed` warning before it says "and N more".
 MAX_REPORTED_DIAGNOSTICS = 3
 
 _FATAL_SEVERITIES = frozenset(
     {pyslang.DiagnosticSeverity.Error, pyslang.DiagnosticSeverity.Fatal}
 )
 
-#: The three kinds that carry a name other files can refer to.
+# The three kinds that carry a name other files can refer to.
 _DECLARATION_KINDS = frozenset(
     {
         SyntaxKind.ModuleDeclaration,
@@ -69,24 +110,24 @@ _DECLARATION_KINDS = frozenset(
     }
 )
 
-#: `` `include "x" `` versus `` `include <x> ``.
+# `` `include "x" `` versus `` `include <x> ``.
 _DELIMITERS = (('"', '"'), ("<", ">"))
 
-#: The magic comments. Forgiving about spacing, case, and which comment syntax
-#: carries it, so `` // autocore: tb ``, `` //autocore:TB `` and
-#: `` /* autocore : rtl */ `` all count. The keyword and the verdict have to be
-#: adjacent, so prose mentioning autocore never reclassifies a file by accident.
+# The magic comments. Forgiving about spacing, case, and which comment syntax
+# carries it, so `` // autocore: tb ``, `` //autocore:TB `` and
+# `` /* autocore : rtl */ `` all count. The keyword and the verdict have to be
+# adjacent, so prose mentioning autocore never reclassifies a file by accident.
 MAGIC_COMMENT_RE = re.compile(r"\bautocore\s*:\s*(tb|rtl)\b", re.IGNORECASE)
 
-#: Trivia that can carry a magic comment.
+# Trivia that can carry a magic comment.
 _COMMENT_TRIVIA = frozenset({TriviaKind.LineComment, TriviaKind.BlockComment})
 
-#: The task-control calls that make up half of the evidence branch.
+# The task-control calls that make up half of the evidence branch.
 _FINISH_TASKS = frozenset({"$finish", "$stop"})
 
-#: `initial` blocks weigh against these. Instantiations are deliberately not
-#: in the list: a testbench instantiates its DUT, so counting instances would
-#: penalise exactly the files this evidence is meant to notice.
+# `initial` blocks weigh against these. Instantiations are not in the list: a
+# testbench instantiates its DUT, so counting instances would penalise exactly
+# the files this evidence is meant to notice.
 _STRUCTURAL_KINDS = frozenset(
     {
         SyntaxKind.AlwaysBlock,
@@ -106,9 +147,9 @@ class SvSlangBackend:
     it to worker processes.
     """
 
-    #: Directories searched for `` `include `` targets, in order. Sorted by
-    #: `for_tree`, so two headers with the same basename resolve the same way on
-    #: every run.
+    # Directories searched for `` `include `` targets, in order. Sorted by
+    # `for_tree`, so two headers with the same basename resolve the same way on
+    # every run.
     include_dirs: tuple[Path, ...] = ()
 
     languages: ClassVar[frozenset[Lang]] = SUPPORTED_LANGUAGES
@@ -189,9 +230,9 @@ class SvSlangBackend:
 class _Found:
     """Everything one pass over a syntax tree produces.
 
-    The counters and the directive set are *tallies*, not verdicts. `evidence`
-    and `directive` are the only places a judgement is made, and neither
-    depends on the order the walk visited anything in.
+    The counters and the directive set are tallies. `evidence` and `directive`
+    are the only places a judgement is made, and neither depends on the order
+    the walk visited anything in.
     """
 
     declared: set[str] = field(default_factory=set)
@@ -297,9 +338,9 @@ def _scan_trivia(token: Token, found: _Found) -> None:
     there is nothing to splice in, so the directive stays behind as trivia on
     the following token. And magic comments, including the ones that never
     reach a real token at all, because slang folds a comment written directly
-    above a preprocessor directive into *that directive's* trivia. Recursing
-    through directive syntax is the only way to reach those, and a testbench
-    whose header comment sits above `` `timescale `` is the ordinary case.
+    above a preprocessor directive into that directive's trivia. Recursing
+    through directive syntax is the only way to reach those, which matters
+    because testbenches commonly put their header comment above `` `timescale ``.
     """
     for trivia in token.trivia:
         if trivia.kind in _COMMENT_TRIVIA:
@@ -346,9 +387,8 @@ def _add(target: set[str], name: str) -> None:
 def _summarise(messages: Sequence[str]) -> str:
     """A stable one-line digest of a file's error diagnostics.
 
-    Source order, capped, and free of file paths and line numbers: the message
-    ends up in a `Warning`, which must not change with where the tree is
-    checked out.
+    Source order, capped, and free of file paths and line numbers. The message
+    ends up in a `Warning`, which must read the same from any checkout.
     """
     head = "; ".join(messages[:MAX_REPORTED_DIAGNOSTICS])
     extra = len(messages) - MAX_REPORTED_DIAGNOSTICS

@@ -5,9 +5,9 @@ This module is a CLI layer over `autocore.generate()` and
 renders warnings for stderr, and either writes the generated `.core` file or
 prints it to stdout under `--dry-run`.
 
-No pipeline logic should live here. The CLI is responsible for argument
-validation, user-facing output, exit behavior, and interactive plumbing, while
-the actual scan/parse/resolve/emit decisions stay inside the library.
+No pipeline logic lives here. The CLI handles argument validation, user-facing
+output, exit behavior, and interactive plumbing; the scan/parse/resolve/emit
+decisions stay inside the library.
 
 Exit codes follow a simple rule:
 - 0: success, including success with warnings
@@ -46,19 +46,17 @@ app = typer.Typer(
     add_completion=False,
 )
 
-#: Validation pattern for one FuseSoC VLNV part.
-#: `--name` and `--library` are checked here because an invalid VLNV part is a
-#: user input error, not a pipeline resolution problem.
+# Validation pattern for one FuseSoC VLNV part. `--name` and `--library` are
+# checked here because an invalid VLNV part is a user input error.
 _VLNV_PART_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
-#: Accepted `--define` forms: `NAME` and `NAME=VALUE`.
-#: The name portion follows SystemVerilog identifier rules, including `$`.
-#: The value portion may be anything, including empty text.
+# Accepted `--define` forms: `NAME` and `NAME=VALUE`. The name portion follows
+# SystemVerilog identifier rules, including `$`; the value may be anything,
+# including empty text.
 _DEFINE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(=.*)?\Z", re.DOTALL)
 
-#: Number of warnings with the same code needed before grouping kicks in.
-#: This keeps common repeated diagnostics readable in normal output while
-#: `-v` still shows everything in full.
+# How many warnings with the same code before grouping kicks in. Keeps
+# repeated diagnostics readable in normal output; `-v` still shows them all.
 WARNING_GROUP_THRESHOLD = 3
 
 
@@ -84,8 +82,8 @@ def main(
 def _vlnv_part(value: str | None) -> str | None:
     """Validate one `--name` or `--library` VLNV part.
 
-    The CLI rejects invalid values early so the user gets a clear usage error
-    instead of a later failure deeper in the toolchain.
+    Rejected early so the user gets a clear usage error instead of a failure
+    deeper in the toolchain.
     """
     if value is None or _VLNV_PART_RE.fullmatch(value):
         return value
@@ -98,11 +96,11 @@ def _defines(values: list[str] | None) -> list[str] | None:
     """Reject a ``--define`` that is neither ``NAME`` nor ``NAME=VALUE``.
 
     A malformed define is a usage error (exit 2) rather than something to
-    forward: slang takes predefines as opaque strings, so ``--define 2=3`` or
+    forward. slang takes predefines as opaque strings, so ``--define 2=3`` or
     a shell-mangled ``--define "FOO BAR"`` would not fail; it would silently
-    define nothing, and the missing macro would then show up as an unexplained
-    parse failure or a module that lost half its instantiations. Failing at
-    the flag is the only place the cause is still visible.
+    define nothing, and the missing macro would surface later as an
+    unexplained parse failure or a module that lost half its instantiations.
+    By then the cause is no longer visible, so the flag rejects it up front.
     """
     for value in values or ():
         if not _DEFINE_RE.match(value):
@@ -281,8 +279,8 @@ def init(
         # from `--name` or from the sanitized directory name.
         output = path / f"{result.manifest.vlnv.split(':')[2]}.core"
     try:
-        # Creating the parents is entry-point plumbing, not part of the
-        # overwrite-refusal promise: that is about existing *files*.
+        # Creating the parents is entry-point plumbing. The overwrite refusal
+        # below is about an existing file, not an existing directory.
         output.parent.mkdir(parents=True, exist_ok=True)
         write_core(result.text, output, force=force)
     # FileExistsError is the overwrite refusal; the rest is the filesystem.
@@ -302,11 +300,10 @@ def _apply_answers(
 ) -> GenerateResult:
     """Offer `result`'s ambiguities to the user and re-resolve if they chose.
 
-    Whether anything is actually asked is `interact.decide`'s call, not this
-    module's, the gate lives in one place and this is not it. An empty
-    `Decisions` means nothing was asked or nothing was changed, and the first
-    run stands untouched, which is why ``--yes`` output stays byte-identical
-    to the goldens. Only Resolve and Emit re-run; the tree is read once.
+    `interact.decide` owns the question of whether anything is asked at all.
+    An empty `Decisions` means nothing was asked or nothing changed, so the
+    first run stands untouched and ``--yes`` output stays byte-identical to
+    the goldens. Only Resolve and Emit re-run; the tree is read once.
     """
     decisions = decide(result.model, root, assume_yes=assume_yes, stdin=sys.stdin)
     if not decisions:
@@ -327,13 +324,13 @@ def _upward_path_warnings(
     """Warn when the chosen output forces file paths above the .core file.
 
     A manifest written outside the tree it describes refers to its files as
-    ``../rtl/alu.v``, and fusesoc 2.4.6 deprecates exactly that: every such
-    path raises a `FutureWarning` from `Core.export` saying it "is not within
-    the directory containing the core file [...] and will be an error in a
-    future FuseSoC version". Nothing is broken today and the default output is
-    never affected, ``PATH/<name>.core`` sits above everything it lists, so
-    this is a warning about a choice, made where the choice is made, and not
-    part of the model any library caller shares.
+    ``../rtl/alu.v``, and fusesoc 2.4.6 deprecates that: every such path raises
+    a `FutureWarning` from `Core.export` saying it "is not within the directory
+    containing the core file [...] and will be an error in a future FuseSoC
+    version". Nothing is broken today, and the default output never trips it
+    because ``PATH/<name>.core`` sits above everything it lists. The warning
+    belongs to the ``--output`` choice, so it is built here and kept out of
+    the model that library callers share.
     """
     upward = sorted(
         {
@@ -364,14 +361,14 @@ def _warning_lines(
     """Render `warnings` for stderr, grouped unless `verbose`.
 
     Under ``-v`` every warning gets its own line and every detail an indented
-    one beneath it, nothing is summarised, because that is what the flag is
-    for. Otherwise a code occurring `WARNING_GROUP_THRESHOLD` times or more
-    collapses to one counted line carrying the first of its messages as the
-    example, and details collapse to a pointer at ``-v``.
+    one beneath it, with no summarising. Otherwise a code occurring
+    `WARNING_GROUP_THRESHOLD` times or more collapses to one counted line
+    carrying the first of its messages as the example, and details collapse to
+    a pointer at ``-v``.
 
-    Order is `warnings`' own, which Resolve sorted by ``(path, code)``; a
-    grouped line takes the place of its code's first occurrence. Same input,
-    same lines, always.
+    Order is `warnings`' own, which Resolve sorted by ``(path, code)``, and a
+    grouped line takes the place of its code's first occurrence, so the same
+    input always renders the same lines.
     """
     if verbose:
         lines: list[str] = []

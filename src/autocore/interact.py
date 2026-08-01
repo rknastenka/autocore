@@ -4,8 +4,7 @@ This module is the only part of autocore that may ask the user a question.
 
 The pipeline itself stays non-interactive: Resolve produces ambiguities as
 data, and this module decides whether they should be turned into prompts.
-That separation keeps the core pipeline deterministic and makes interactive
-behavior optional.
+That keeps the pipeline deterministic and interactive behavior optional.
 
 `decide()` only prompts when all three conditions are true:
 1. stdin is a TTY,
@@ -41,11 +40,6 @@ __all__ = [
     "decide",
 ]
 
-#: The two possible answers for an unclear testbench classification.
-#: `_RTL` is also the documented default.
-_RTL = "rtl"
-_TB = "tb"
-
 
 @dataclass(frozen=True)
 class Choice:
@@ -58,11 +52,11 @@ class Choice:
 class Asker(Protocol):
     """How this module asks a question, and the seam tests replace.
 
-    One method, because every prompt auto-core has is the same shape: pick one
-    of several, with a default that reproduces the non-interactive answer.
-    Implementations must return `default` when the user declines to choose
-    (empty input, Ctrl-C, a closed terminal), never raise, and never write to
-    stdout.
+    Every prompt autocore has takes the same shape, so one method covers them:
+    pick one of several, with a default that reproduces the non-interactive
+    answer. Implementations must return `default` when the user declines to
+    choose (empty input, Ctrl-C, a closed terminal), never raise, and never
+    write to stdout.
     """
 
     def select(
@@ -73,9 +67,8 @@ class Asker(Protocol):
 class QuestionaryAsker:
     """The real asker: questionary, rendered to stderr.
 
-    questionary is imported inside `select` rather than at module scope so the
-    overwhelmingly common path, a non-interactive run, never pays for a
-    prompt-toolkit import it will not use.
+    questionary is imported inside `select`, not at module scope, so a
+    non-interactive run never pays for the prompt-toolkit import.
     """
 
     def __init__(self, stream: IO[str] | None = None) -> None:
@@ -96,9 +89,8 @@ class QuestionaryAsker:
             default=preselected,
             output=create_output(stdout=self._stream),
         ).ask()
-        # `ask()` returns None when the user interrupts. Declining to choose is
-        # not an error; it is a request for the default, which is the same
-        # answer `--yes` would have produced.
+        # `ask()` returns None when the user interrupts. Fall back to the
+        # default, which is what `--yes` would have produced.
         return default if answer is None else answer
 
 
@@ -106,8 +98,8 @@ class QuestionaryAsker:
 class Decisions:
     """What the user chose, in the shape Resolve takes it back in.
 
-    Empty when nothing was asked, which is the signal to the caller that the
-    first pipeline run already stands and Resolve need not run again.
+    Empty when nothing was asked. The caller reads that as "the first pipeline
+    run stands" and skips re-resolving.
     """
 
     top: str | None = None
@@ -127,11 +119,11 @@ def decide(
 ) -> Decisions:
     """Ask about `model`'s ambiguities, or return the empty `Decisions`.
 
-    `root` only shapes the wording of the questions, paths are shown relative
-    to the scanned tree, never as the absolute location of a checkout.
+    `root` only shapes the wording of the questions; paths are shown relative
+    to the scanned tree so a checkout location never appears in a prompt.
 
-    The gate is spelled out once, right below, and is the only place in
-    auto-core that decides whether anything prompts.
+    The condition right below is the only place in autocore that decides
+    whether anything prompts.
     """
     stream = sys.stdin if stdin is None else stdin
     if assume_yes or not model.ambiguities or not _is_a_tty(stream):
@@ -147,15 +139,10 @@ def decide(
         elif isinstance(ambiguity, UnclearTbStatus):
             overrides.append((ambiguity.path, _ask_tb_status(asker, ambiguity, root)))
         elif isinstance(ambiguity, MixedLangFileType):
-            # Implemented, unreachable, and deliberately inert: Resolve cannot
-            # build a `MixedLangFileType` until a VHDL backend lands, and there
-            # is no file-type override on `resolve()` for an answer to feed
-            # back into yet. Asking a question whose answer goes nowhere would
-            # be worse than not asking, so this branch applies the
-            # dominant-language default Emit already picks. What it must not
-            # be is *missing*: an ambiguity type nobody handles is one the
-            # user is silently denied a say in, which is what the `else`
-            # below turns into a crash rather than a shrug.
+            # Unreachable until a VHDL backend lands, and `resolve()` has no
+            # file-type override for an answer to feed back into. Keep the
+            # dominant-language default Emit picks; the `else` below is what
+            # catches an ambiguity type nobody handles.
             continue
         else:
             raise AssertionError(f"unhandled ambiguity type: {type(ambiguity)!r}")
@@ -166,12 +153,13 @@ def decide(
 def _is_a_tty(stream: IO[str] | None) -> bool:
     """Whether `stream` is a terminal a human could answer through.
 
-    Defensive on purpose: stdin can be `None` (a GUI-launched interpreter) or
-    already closed, and neither is a reason to fail a run that was going to
-    apply the defaults anyway.
+    stdin can be `None` (a GUI-launched interpreter) or already closed. Such a
+    run would apply the defaults anyway, so neither case should fail it.
     """
+    if stream is None:
+        return False
     try:
-        return bool(stream is not None and stream.isatty())
+        return stream.isatty()
     except (AttributeError, ValueError):
         return False
 
@@ -181,17 +169,15 @@ def _ask_top(asker: Asker, ambiguity: MultipleTops, fallback: str) -> str:
 
     `fallback` is `ProjectModel.top`, the answer the automatic fallback
     already applied, so pressing enter reproduces ``--yes`` exactly. Each
-    candidate shows its closure size because that is the number the fallback
-    weighed: seeing that one candidate drags 40 files behind it and another
-    drags one is what makes the choice obvious rather than a coin toss between
-    two names.
+    candidate shows its closure size, which is the number the fallback weighed
+    and usually the only thing distinguishing two bare module names.
     """
     choices = [
         Choice(
-            value=candidate.name,
-            label=f"{candidate.name} ({candidate.closure_size} file(s) in its closure)",
+            value=c.name,
+            label=f"{c.name} ({c.closure_size} file(s) in its closure)",
         )
-        for candidate in ambiguity.candidates
+        for c in ambiguity.candidates
     ]
     return asker.select(
         "Several modules are instantiated by nobody. Which is the toplevel?",
@@ -203,20 +189,20 @@ def _ask_top(asker: Asker, ambiguity: MultipleTops, fallback: str) -> str:
 def _ask_tb_status(asker: Asker, ambiguity: UnclearTbStatus, root: Path) -> TbDirective:
     """RTL or testbench for one file, defaulting to the non-testbench reading.
 
-    One file at a time, deliberately: each answer is independent, and a single
-    combined prompt would make the common case (accept every default) harder
-    rather than easier. The default matches Resolve's: partial evidence is
-    not enough to move a file out of the design.
+    One file per prompt, since each answer is independent and a combined
+    prompt would slow down the common case of accepting every default. The
+    default matches Resolve's: partial evidence is not enough to move a file
+    out of the design.
     """
     answer = asker.select(
         f"{_rel(ambiguity.path, root)} looks like it might be a testbench. What is it?",
         [
-            Choice(_RTL, "RTL: part of the design"),
-            Choice(_TB, "testbench: simulation only"),
+            Choice(TbDirective.RTL.value, "RTL: part of the design"),
+            Choice(TbDirective.TB.value, "testbench: simulation only"),
         ],
-        default=_RTL,
+        default=TbDirective.RTL.value,
     )
-    return TbDirective.TB if answer == _TB else TbDirective.RTL
+    return TbDirective.TB if answer == TbDirective.TB.value else TbDirective.RTL
 
 
 def _rel(path: Path, root: Path) -> str:

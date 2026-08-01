@@ -4,18 +4,17 @@ This module defines the common types passed between scan, parse, resolve, and
 emit. Keeping these models frozen makes pipeline behavior easier to reason
 about and helps preserve deterministic output.
 
-A key design goal of autocore is: the same input tree should produce the same
-output bytes every time. Some fields are stored as sets for convenience, but
-sets do not have a stable iteration order, so any set that later becomes an
-ordered output must be sorted first. Ordered fields in this module are stored
-as tuples so each stage can make its ordering choice once and pass it on
-explicitly.
+The same input tree has to produce the same output bytes every time. Some
+fields are stored as sets for convenience, but sets have no stable iteration
+order, so any set that later becomes an ordered output must be sorted first.
+Ordered fields here are tuples, which lets each stage make its ordering choice
+once and pass it on explicitly.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
@@ -54,8 +53,8 @@ class Lang(Enum):
     VHDL = "vhdl"
 
 
-#: Map each supported source-file extension to its language.
-#: Matching is case-insensitive in `lang_for_path`.
+# Map each supported source-file extension to its language.
+# Matching is case-insensitive in `lang_for_path`.
 SOURCE_SUFFIXES: Mapping[str, Lang] = MappingProxyType(
     {
         ".v": Lang.VERILOG,
@@ -66,9 +65,9 @@ SOURCE_SUFFIXES: Mapping[str, Lang] = MappingProxyType(
         ".vhdl": Lang.VHDL,
     }
 )
-#: Header-like extensions that may be used as include files.
-#: Scan marks them as include candidates first, and Resolve may later demote
-#: one back into an ordinary source file if it actually declares modules.
+# Header-like extensions that may be used as include files.
+# Scan marks them as include candidates first, and Resolve may later demote
+# one back into an ordinary source file if it actually declares modules.
 INCLUDE_SUFFIXES: frozenset[str] = frozenset({".vh", ".svh"})
 
 
@@ -167,9 +166,8 @@ class Warning:
     `details` carries any longer extra information that a caller may choose to
     show separately, such as a list of excluded files.
 
-    Details are strings rather than paths because they are already
-    tree-relative and POSIX-separated when a producer builds them. A warning
-    never embeds the absolute location of a checkout.
+    Details are strings, not paths: producers build them already tree-relative
+    and POSIX-separated, so a warning never embeds a checkout location.
     """
 
     code: str
@@ -241,7 +239,7 @@ class MixedLangFileType:
     path: Path
 
 
-#: The complete set of ambiguity types the pipeline may surface.
+# The complete set of ambiguity types the pipeline may surface.
 Ambiguity = MultipleTops | UnclearTbStatus | MixedLangFileType
 
 
@@ -253,17 +251,17 @@ class ProjectModel:
     top, compile order, testbench classification, include information,
     warnings, and any ambiguities that may need user input.
 
-    `testbenches` is every file classified as one; `tb_compile_order` is the
-    narrower thing Emit needs, the closure of `tb_top` *minus* the rtl set, in
-    dependency order. The subtraction is why the two differ: a testbench
-    instantiating the rtl top must not drag the whole rtl closure into the tb
-    fileset a second time. Both are empty when the tree has no testbench, and
-    that is what suppresses the ``sim`` target.
+    `testbenches` is every file classified as one. `tb_compile_order` is the
+    narrower thing Emit needs: the closure of `tb_top` with the rtl set
+    subtracted, in dependency order. Without that subtraction a testbench
+    instantiating the rtl top would drag the whole rtl closure into the tb
+    fileset a second time. Both are empty when the tree has no testbench, which
+    suppresses the ``sim`` target.
 
     `tb_top_alternatives` is the testbench tops that lost, sorted by name, and
-    empty whenever the choice was not a choice at all. Exactly one sim target
-    with exactly one toplevel is emitted either way; the alternatives exist so
-    Emit can say in the file itself that a guess was made.
+    empty when there was nothing to choose between. Either way Emit produces
+    one sim target with one toplevel; the alternatives let it note in the file
+    that a guess was made.
     """
 
     files: tuple[FileFacts, ...]
@@ -302,10 +300,9 @@ class Fileset:
     """Represent one CAPI2 fileset.
 
     Empty keys are omitted at Emit time. There is no include-dirs field
-    because CAPI2 filesets have none: FuseSoC derives the include path from
+    because CAPI2 filesets have none. FuseSoC derives the include path from
     the directory of each file flagged ``is_include_file``, so include
-    directories appear here only implicitly, through
-    `FileEntry.is_include_file`.
+    directories only appear here through `FileEntry.is_include_file`.
     """
 
     name: str
@@ -317,17 +314,17 @@ class Fileset:
 class ToolOption:
     """Represent one tool-specific option inside a target.
 
-    Most tool configuration is intentionally out of scope for autocore. The few
-    options that do appear here are those the project can infer reliably from
-    the source tree and needs in order to emit a usable target.
+    Most tool configuration is out of scope for autocore. The few options that
+    appear here are the ones the project can infer reliably from the source
+    tree and needs in order to emit a usable target.
 
-    the `sim` target says `verilator: {mode: binary}`, because edalize
-    otherwise defaults Verilator to `cc` mode and a self-contained
-    SystemVerilog testbench with no C++ driver cannot link. Whether the tree
-    has such a driver follows from what Parse already knows, which is what
-    keeps this an inference rather than a config knob.
+    The `sim` target says `verilator: {mode: binary}`. Edalize otherwise
+    defaults Verilator to `cc` mode, and a self-contained SystemVerilog
+    testbench with no C++ driver cannot link. Whether the tree has such a
+    driver follows from what Parse already knows, so this stays an inference
+    and not a config knob.
 
-    Flat rather than nested so the whole thing stays frozen and hashable;
+    Flat rather than nested, so the whole thing stays frozen and hashable.
     Emit groups entries back into `{tool: {key: value}}` in list order.
     """
 
@@ -361,5 +358,5 @@ class CoreManifest:
     """Store the structured CAPI2 manifest which is an input to Emit."""
 
     vlnv: str
-    filesets: tuple[Fileset, ...] = field(default_factory=tuple)
-    targets: tuple[Target, ...] = field(default_factory=tuple)
+    filesets: tuple[Fileset, ...] = ()
+    targets: tuple[Target, ...] = ()

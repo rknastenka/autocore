@@ -4,8 +4,8 @@ This module is the main public entry point for the library.
 
 `generate()` runs the full pipeline and returns everything a caller may need:
 the structured manifest, the rendered `.core` text, and any warnings collected
-along the way. The CLI and any future integration layers should stay thin and
-build on top of this API instead of re-implementing pipeline logic.
+along the way. The CLI and any future integration layers build on top of this
+API instead of re-implementing pipeline logic.
 
 `regenerate()` is the lightweight companion to `generate()`. It reuses an
 existing scan/parse result and only re-runs the later stages when the caller
@@ -42,10 +42,9 @@ __version__ = "0.1.0"
 class GenerateError(Exception):
     """Raised when a requested pipeline action cannot be completed at all.
 
-    This should be rare. The general rule of the pipeline is to keep going and
-    collect warnings instead of failing. This exception is reserved for cases
-    where the request itself cannot be honored, such as forcing a top module
-    that does not exist in the parsed tree.
+    Rare. The pipeline normally keeps going and collects warnings; this is
+    reserved for a request that cannot be honored, such as forcing a top
+    module that does not exist in the parsed tree.
     """
 
 
@@ -108,8 +107,7 @@ def generate(
     This function scans the tree, parses the source files, resolves the project
     structure, and renders the final `.core` output.
 
-    It does not write files or print warnings by itself. Those responsibilities
-    belong to the caller, such as the CLI.
+    It does not write files or print warnings; that is up to the caller.
 
     Raises:
         GenerateError: If `options.top` names a module that is not declared by
@@ -118,7 +116,7 @@ def generate(
     """
     # Imported here rather than at module top for two reasons: `emit` reads
     # `__version__` back from this partially-initialised package, and the
-    # pyslang import behind `parse` is too heavy a toll on `autocore --version`.
+    # pyslang import behind `parse` would slow down `autocore --version`.
     from autocore.parse import parse_sources
     from autocore.scan import scan
 

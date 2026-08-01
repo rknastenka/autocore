@@ -7,24 +7,24 @@ a symbol table, dependency edges, testbench classification, include matching,
 a chosen RTL top, compile order, and the warnings/ambiguities needed by later
 stages.
 
-The resolver is intentionally pure. It does not touch the filesystem, prompt
-the user, or write output. Its job is to make the best deterministic decision
-it can, surface anything unclear as data, and let higher layers decide how to
-present that information.
+The resolver is pure: it does not touch the filesystem, prompt the user, or
+write output. Its job is to make the best deterministic decision it can,
+surface anything unclear as data, and let higher layers decide how to present
+that information.
 
 The rtl set is the transitive closure of the detected top, following
 instantiation, package-import and include edges. Files that were scanned but
 fall outside it are excluded from `ProjectModel.rtl` and reported in one
-warning that counts them, with their names on `Warning.details`. A manifest
-listing everything scanned would be valid CAPI2 and unbuildable; real trees
-keep whole subdirectories of tool-specific stubs that no top reaches, and
-there can be dozens, which is why the names are details rather than message.
+warning that counts them, with their names on `Warning.details`. Listing every
+scanned file would produce a manifest fusesoc accepts but that usually fails
+to build, since real trees keep whole subdirectories of tool-specific stubs no
+top reaches. There can be dozens, so the names go in the details.
 
 The tb set is the same idea run a second time, from the testbench top, with
-two differences: it does not stop at testbench files (that is the point), and
-whatever the rtl set already holds is subtracted from it afterwards. A
-testbench instantiating the rtl top reaches the entire rtl closure, and
-emitting that twice would be both wrong and loud.
+two differences: the walk is allowed through testbench files, and whatever the
+rtl set already holds is subtracted afterwards. A testbench instantiating the
+rtl top reaches the entire rtl closure, which would otherwise be emitted in
+both filesets.
 
 Every set-to-sequence conversion in this module goes through `sorted()`.
 Frozenset iteration order varies with the process hash seed, so an unsorted
@@ -56,12 +56,11 @@ from autocore.models import (
 )
 
 __all__ = ["TB_FILENAME_PATTERNS", "resolve"]
-#: Default filename patterns used by the testbench classifier.
-#: These are matched against the lowercased basename only.
-#:
-#: `--tb-glob` replaces this tuple for a given run rather than extending it.
-#: That keeps the rule easy to reason about: either the built-in patterns
-#: are in effect, or the caller has supplied a full replacement set.
+
+# Default filename patterns used by the testbench classifier, matched against
+# the lowercased basename only. `--tb-glob` replaces this tuple for a run
+# instead of extending it, so either these patterns are in effect or the
+# caller's full replacement set is.
 TB_FILENAME_PATTERNS: tuple[str, ...] = (
     "*_tb.*",
     "tb_*.*",
@@ -172,14 +171,12 @@ def resolve(
         include_files=include_files,
         include_dirs=include_dirs,
         external_refs=external_refs,
-        warnings=tuple(sorted(warnings, key=lambda warning: warning.sort_key)),
+        warnings=tuple(sorted(warnings, key=lambda w: w.sort_key)),
         ambiguities=ambiguities,
     )
 
 
-# --------------------------------------------------------------------------
 # symbol table
-# --------------------------------------------------------------------------
 
 
 def _symbol_table(
@@ -210,9 +207,7 @@ def _symbol_table(
     return symbols, warnings
 
 
-# --------------------------------------------------------------------------
 # reference edges and external refs
-# --------------------------------------------------------------------------
 
 
 def _reference_edges(
@@ -252,9 +247,7 @@ def _reference_edges(
     return deps, frozenset(users_of), warnings
 
 
-# --------------------------------------------------------------------------
 # testbench classification
-# --------------------------------------------------------------------------
 
 
 def _classify_testbenches(
@@ -265,7 +258,7 @@ def _classify_testbenches(
 ) -> tuple[frozenset[Path], list[Warning], list[Ambiguity]]:
     """Classify scanned files as testbench or non-testbench.
 
-    The decision order is intentional and stable:
+    Decision order, first match wins:
 
     1. A caller override wins.
     2. An explicit autocore directive wins.
@@ -315,7 +308,6 @@ def _classify_testbenches(
         elif directive is TbDirective.RTL:
             pass  # beats the filename patterns and the evidence alike
         elif _is_testbench_filename(path.name, patterns) or evidence.strong:
-            """Return whether a basename matches the active testbench patterns."""
             testbenches.add(path)
         elif evidence.partial:
             ambiguities.append(UnclearTbStatus(path))
@@ -337,9 +329,7 @@ def _is_testbench_filename(name: str, patterns: Sequence[str]) -> bool:
     return any(fnmatchcase(lowered, pattern) for pattern in patterns)
 
 
-# --------------------------------------------------------------------------
 # include resolution: matching here, classification back in `resolve`
-# --------------------------------------------------------------------------
 
 
 def _effective_include_candidates(
@@ -401,9 +391,7 @@ def _basename(written: str) -> str:
     return written.replace("\\", "/").rsplit("/", 1)[-1]
 
 
-# --------------------------------------------------------------------------
 # top detection
-# --------------------------------------------------------------------------
 
 
 def _detect_top(
@@ -504,16 +492,16 @@ def _detect_tb_top(
 
     if not declared:
         # Testbenches that declare nothing (or nothing they own) cannot host a
-        # sim target; the classification still stands, keeping them out of rtl.
+        # sim target. They stay classified, which keeps them out of rtl.
         return "", [], ()
 
     if len(candidates) == 1:
         return candidates[0], [], ()
 
     if not candidates:
-        # Mutually-instantiating benches: nobody is free, so the choice is made
-        # from every declared name and is a guess in the same way several
-        # candidates would be, hence alternatives here too.
+        # Mutually-instantiating benches: nobody is free, so the choice comes
+        # from every declared name. Still a guess, so alternatives are returned
+        # here too.
         top = declared[0]
         warning = Warning(
             "NoTestbenchTop",
@@ -522,8 +510,8 @@ def _detect_tb_top(
         )
         return top, [warning], tuple(name for name in declared if name != top)
 
-    # An empty testbench set means "nothing is off limits", which is what the
-    # tb closure wants: sizes here are measured the way tb_files is built.
+    # An empty testbench set means nothing is off limits, so sizes here are
+    # measured the same way tb_files is built.
     sizes = _closure_sizes(candidates, symbols, deps, include_edges, frozenset())
     top, reason = _fallback_top(candidates, root, sizes)
     warning = Warning(
@@ -588,9 +576,7 @@ def _sanitize(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-# --------------------------------------------------------------------------
 # the rtl closure
-# --------------------------------------------------------------------------
 
 
 def _closure(
@@ -619,9 +605,7 @@ def _closure(
     return reached
 
 
-# --------------------------------------------------------------------------
 # testbenches the sim target has no room for
-# --------------------------------------------------------------------------
 
 
 def _dropped_testbench_warnings(
@@ -657,9 +641,7 @@ def _dropped_testbench_warnings(
     ]
 
 
-# --------------------------------------------------------------------------
 # compile order
-# --------------------------------------------------------------------------
 
 
 def _compile_order(
@@ -674,12 +656,12 @@ def _compile_order(
     ready, alphabetical path order decides which one comes next.
 
     If a cycle prevents progress, the resolver breaks one specific edge,
-    records a warning, and continues. The goal is to keep producing a usable,
-    explainable result rather than fail outright.
+    records a warning, and continues, so a cyclic tree still gets a usable
+    order.
 
     A node with no entry in either edge dict (a matched header that never
-    parsed) simply has no dependencies and sorts early, which is where a
-    header belongs.
+    parsed) has no dependencies and sorts early, which is where a header
+    belongs.
     """
     remaining: dict[Path, set[Path]] = {
         node: {
@@ -708,7 +690,7 @@ def _compile_order(
                 key=lambda edge: (edge[0].as_posix(), edge[1].as_posix()),
             )
             # A stuck subgraph always contains a cycle, so at least one edge
-            # closes one; take the alphabetically last of those.
+            # closes one. Take the alphabetically last of those.
             dependent, dependency = next(
                 edge
                 for edge in reversed(edges)
@@ -729,8 +711,8 @@ def _compile_order(
 def _reaches(source: Path, target: Path, remaining: dict[Path, set[Path]]) -> bool:
     """Whether `target` is reachable from `source` over the unmet edges.
 
-    The unsorted set walk inside is safe because the answer is a bool: no set
-    order reaches anything the output is built from.
+    The set walk inside is unsorted, which is safe here because the answer is a
+    bool and no set order reaches anything the output is built from.
     """
     seen = {source}
     stack = [source]
@@ -745,9 +727,7 @@ def _reaches(source: Path, target: Path, remaining: dict[Path, set[Path]]) -> bo
     return False
 
 
-# --------------------------------------------------------------------------
 # shared helpers
-# --------------------------------------------------------------------------
 
 
 def _rel(path: Path, root: Path) -> str:

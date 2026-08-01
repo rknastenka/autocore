@@ -9,9 +9,8 @@ Scan does not parse file contents. Its only content-level decision is based on
 file extension. It also applies `.gitignore` rules, skips selected directories,
 and follows symlinks safely so the walk stays practical on real project trees.
 
-A key design goal here is deterministic output: the same tree should produce
-the same ordered file list regardless of filesystem iteration order or checkout
-location.
+Output is deterministic: the same tree produces the same ordered file list
+regardless of filesystem iteration order or checkout location.
 """
 
 from __future__ import annotations
@@ -25,9 +24,9 @@ from autocore.models import SOURCE_SUFFIXES, ScanResult, is_include_suffix
 
 __all__ = ["ALWAYS_SKIP_DIRS", "GITIGNORE_NAME", "scan"]
 
-#: Directory names that are always skipped during scanning.
-#: Matching is by whole directory name, so names like `builds/` or
-#: `workspace/` are not affected.
+# Directory names that are always skipped during scanning.
+# Matching is by whole directory name, so names like `builds/` or
+# `workspace/` are not affected.
 ALWAYS_SKIP_DIRS: frozenset[str] = frozenset({".git", "build", "sim_build", "work"})
 
 GITIGNORE_NAME = ".gitignore"
@@ -45,8 +44,8 @@ def scan(root: Path | str) -> ScanResult:
     Raises:
         NotADirectoryError: If `root` is not a directory.
 
-    Unreadable directories and broken symlinks are skipped quietly. The scanner
-    prefers returning a partial result over failing on a messy tree.
+    Unreadable directories and broken symlinks are skipped quietly, so a messy
+    tree yields a partial result instead of an error.
     """
     root = Path(root)
     if not root.is_dir():
@@ -127,7 +126,7 @@ def _identity(directory: Path) -> tuple[int, int] | None:
     loops even when symlinks or multiple paths point to the same place.
     """
     try:
-        info = directory.stat()  # follows symlinks - that is the point
+        info = directory.stat()  # follows symlinks, so aliases share an identity
     except OSError:
         return None
     return (info.st_dev, info.st_ino)

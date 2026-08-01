@@ -6,19 +6,19 @@ over a `ScanResult`.
 
 The driver exists to hold two invariants:
 
-* **Never fatal.** A file that will not parse produces a `Warning` and is left
-  out of `ParseResult.files`; the pipeline keeps going with the files that did
-  parse. The only exceptions that escape `parse_all` are the ones that mean the
-  process itself is broken, not the source tree.
-* **Same order every run.** Work is fanned out over a `ProcessPoolExecutor`,
-  so results arrive in completion order, which depends on scheduling and
-  varies run to run. They are gathered in full and then sorted by path before
-  anything downstream can observe them, which is what keeps the emitted
-  manifest byte-identical for an identical tree.
+* Never fatal. A file that will not parse produces a `Warning` and is left out
+  of `ParseResult.files`; the pipeline keeps going with the files that did
+  parse. The only exceptions that escape `parse_all` are the ones meaning the
+  process itself is broken.
+* Same order every run. Work is fanned out over a `ProcessPoolExecutor`, so
+  results arrive in completion order, which depends on scheduling and varies
+  run to run. They are gathered in full and then sorted by path before
+  anything downstream can observe them, which keeps the emitted manifest
+  byte-identical for an identical tree.
 
 The backend is a parameter rather than an import, so `base` need not know that
-`sv_slang` exists and a future VHDL backend can be passed rather than wired in
-here. `autocore.parse.parse_sources` supplies the default.
+`sv_slang` exists and a future VHDL backend can be passed in.
+`autocore.parse.parse_sources` supplies the default.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ __all__ = [
     "parse_all",
 ]
 
-#: Below this many files, parsing stays in the current process.
-#: Spinning up worker processes costs more than it saves for very small inputs.
+# Below this many files, parsing stays in the current process; the worker
+# startup cost outweighs the parallelism on small inputs.
 PARALLEL_THRESHOLD = 4
 
 
@@ -54,8 +54,7 @@ class ParseError(Exception):
     """One file could not be turned into `FileFacts`.
 
     Raised by a backend, caught by `parse_all`, and turned into exactly one
-    `Warning`. It never reaches a caller of `parse_all`, which is what "never
-    fatal" means in practice.
+    `Warning`. It never reaches a caller of `parse_all`.
     """
 
     def __init__(self, path: Path, message: str, code: str = "ParseFailed") -> None:
@@ -74,12 +73,11 @@ class ParserBackend(Protocol):
 
     `languages` is what lets `parse_all` route. Scan collects `.vhd` alongside
     `.sv`, so something has to notice that the SystemVerilog backend cannot
-    take a VHDL file and say so as a warning rather than a crash. The same
-    field is how a caller would pick between two backends once a second one
-    exists.
+    take a VHDL file and turn that into a warning. The same field is how a
+    caller would pick between two backends once a second one exists.
     """
 
-    #: Languages this backend accepts, based on file extension routing.
+    # Languages this backend accepts, based on file extension routing.
     languages: frozenset[Lang]
 
     def parse(self, path: Path, defines: Sequence[str] = ()) -> FileFacts:
@@ -126,8 +124,8 @@ def parse_all(
     # keeps it identical to Scan's, which sorts on the path relative to the
     # tree root; the two agree because every path shares that root as a prefix.
     return ParseResult(
-        files=tuple(sorted(facts, key=lambda item: item.path.as_posix())),
-        warnings=tuple(sorted(warnings, key=lambda item: item.sort_key)),
+        files=tuple(sorted(facts, key=lambda f: f.path.as_posix())),
+        warnings=tuple(sorted(warnings, key=lambda w: w.sort_key)),
     )
 
 
@@ -139,8 +137,8 @@ def _run(
 ) -> list[tuple[FileFacts | None, tuple[Warning, ...]]]:
     """Parse the given paths either serially or in parallel.
 
-    The returned list reflects completion order when workers are used. Callers are
-    responsible for sorting if they need a stable visible order.
+    The returned list is in completion order when workers are used, so callers
+    needing a stable order have to sort it.
     """
     workers = _worker_count(len(paths), max_workers)
     if workers <= 1:
@@ -167,8 +165,8 @@ def _parse_one(
 ) -> tuple[FileFacts | None, tuple[Warning, ...]]:
     """Parse one file, converting any failure into a warning.
 
-    Runs in a worker process, so it must stay picklable and must not raise:
-    an escaping exception would take down the pool and with it the whole run.
+    Runs in a worker process, so it must stay picklable and must not raise.
+    An escaping exception would take down the pool and the whole run with it.
     """
     try:
         return backend.parse(path, defines), ()
@@ -176,8 +174,7 @@ def _parse_one(
         return None, (exc.as_warning(),)
     except OSError as exc:
         # `strerror` rather than `str(exc)`: the latter embeds the absolute
-        # path, which would make the warning depend on where the tree sits.
-        # A warning must read the same from any checkout.
+        # path, and a warning must read the same from any checkout.
         detail = exc.strerror or type(exc).__name__
         return None, (Warning("FileUnreadable", detail, path),)
     except Exception as exc:  # a backend bug must not be fatal either
