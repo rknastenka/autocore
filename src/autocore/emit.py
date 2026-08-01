@@ -1,29 +1,17 @@
 """Stage 4: Emit.
 
-Three functions, in pipeline order:
+Turn a resolved project into a `.core` file.
 
-* `to_manifest` turns a `ProjectModel` into a `CoreManifest`. Fileset
-  structure, file types and the VLNV are CAPI2 concerns, so they are decided
-  here rather than in Resolve, and separately from the rendering below so the
-  pure string half stays independently testable. The ``tb`` fileset and the
-  ``sim`` target appear if and only if Resolve found a testbench top and files
-  to put under it.
-* `emit` is the pure `CoreManifest -> str` half: ruamel.yaml under a fixed
-  header, first line exactly ``CAPI=2:``. Empty structural keys are omitted
-  entirely: no ``depend: []``, no empty maps.
-* `write_core` is the one write site: fixed ``\\n`` newlines, and it refuses
-  to overwrite an existing ``.core`` unless forced. That refusal is the
-  one-shot promise.
+This module is the final step of the pipeline.
 
-Include directories are not emitted as a fileset-level ``include_dirs`` key,
-because CAPI2 has no such key: fusesoc 2.4.6's strict loader rejects it.
-FuseSoC derives the include path itself, from the directory containing each
-file flagged ``is_include_file: true``, and those are exactly the directories
-`ProjectModel.include_dirs` holds, so nothing is lost.
+It does three related jobs:
+1. Convert a `ProjectModel` into a structured `CoreManifest`.
+2. Render that manifest into FuseSoC CAPI2 YAML text.
+3. Optionally write the rendered text to disk.
 
-Output is byte-identical for equal input. Everything ordered here comes from
-fields the producer already ordered (`compile_order`) or goes through
-`sorted()`, and `emit` builds a fresh ruamel instance per call.
+The split between manifest-building and rendering is intentional. It keeps the
+formatting layer separate from the project-structure logic, which makes both
+parts easier to test and reason about.
 """
 
 from __future__ import annotations
@@ -58,34 +46,33 @@ __all__ = [
     "write_core",
 ]
 
-#: Language (by extension) to CAPI2 file type. `.vh` and `.svh` reach this
-#: through `lang_for_path`, as Verilog and SystemVerilog respectively.
+#: Map each supported language to its emitted CAPI2 file type.
+#: Header-like files such as `.vh` and `.svh` still resolve through
+#: `lang_for_path`, so they use the same language-based mapping.
 FILE_TYPES: dict[Lang, str] = {
     Lang.VERILOG: "verilogSource",
     Lang.SYSTEMVERILOG: "systemVerilogSource",
     Lang.VHDL: "vhdlSource-2008",
 }
 
-#: The version part of the default VLNV. `--name`/`--library` override the
-#: middle parts; nothing overrides this one.
+#: Default version used in generated VLNV strings.
+#: Callers may override the name and library parts, but not this version here.
 DEFAULT_CORE_VERSION = "0.1.0"
 
-#: The one tool option auto-core emits, on the ``sim`` target only. Tool
-#: options are otherwise out of scope, but without this one edalize defaults
-#: Verilator to ``cc`` mode, which verilates the design into a C++ library and
-#: then fails at link for want of a ``main()`` that only a hand-written driver
-#: could supply. A sim target generated from an RTL tree with no such driver
-#: in it could never run. ``binary`` is Verilator's own answer: it builds a
-#: self-contained executable from the SystemVerilog testbench, which is
-#: exactly the kind of testbench the classification rule picks out.
+#: Tool options emitted for the generated `sim` target.
+#:
+#: Most tool configuration is intentionally outside autocore's scope. This one
+#: exception exists because a generated SystemVerilog testbench is expected to
+#: run as a standalone simulation target, and Verilator's `binary` mode is the
+#: setting that matches that expectation.
 SIM_TOOL_OPTIONS: tuple[ToolOption, ...] = (ToolOption("verilator", "mode", "binary"),)
 
-#: What fusesoc's `Vlnv` accepts per part. Anything else in a directory name
-#: is folded to ``_`` by `_sanitize_vlnv_part`.
+#: Allowed character pattern for one VLNV part.
+#: Any unsupported characters in a default name are folded to `_`.
 _VLNV_PART_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
-#: Column a target's own keys sit at: ``targets:`` then the target name, both
-#: at the two-space mapping indent `_dump` fixes.
+#: Indentation column for comments attached to target-level keys.
+#: This matches the fixed YAML structure used by `_dump`.
 _TARGET_KEY_INDENT = 4
 
 
@@ -102,15 +89,16 @@ def to_manifest(
     name: str | None = None,
     library: str | None = None,
 ) -> CoreManifest:
-    """Assemble the CAPI2 manifest for `model`, scanned from `root`.
+    """Build the structured CAPI2 manifest for a resolved project.
 
-    `core_dir` is the directory the ``.core`` file will live in. Every file
-    path is emitted relative to it, with POSIX separators. It defaults to
-    `root`, where the default output lands.
+    This function translates the resolved project model into the data structure
+    that will later be rendered as a `.core` file.
 
-    `name` and `library` are the ``--name``/``--library`` overrides and are
-    trusted verbatim. Only the default, the directory name, is sanitized to
-    fusesoc's allowed charset, because a directory can be called anything.
+    `core_dir` is the directory where the `.core` file will live. All emitted
+    file paths are made relative to that location.
+
+    `name` and `library` let the caller override the default VLNV parts. If no
+    name is supplied, the project directory name is sanitized and used.
     """
     root = Path(root)
     core_dir = root if core_dir is None else Path(core_dir)
@@ -125,8 +113,9 @@ def to_manifest(
         _file_entry(path, model, core_dir) for path in model.tb_compile_order
     )
 
-    # No empty keys, twice over: a fileset with no files is never built, and a
-    # target never names one that was not.
+    # Only create filesets that actually contain files, and only point targets
+    # at filesets that were created. This keeps the emitted manifest compact
+    # and avoids empty structural keys.
     filesets: tuple[Fileset, ...] = ()
     if rtl_files:
         filesets += (Fileset("rtl", files=rtl_files, file_type=_dominant(rtl_files)),)
@@ -142,12 +131,9 @@ def to_manifest(
         ),
     )
     if tb_files and model.tb_top:
-        # The sim target exists only when a testbench does, and it compiles the
-        # rtl fileset alongside the tb one. Resolve already subtracted the
-        # overlap, so nothing is listed twice. Exactly one sim target with
-        # exactly one toplevel, always: when the toplevel was a guess between
-        # several benches, the file says so in a comment rather than the
-        # manifest offering a choice CAPI2 cannot express.
+        # The simulation target exists only when a usable testbench exists.
+        # It includes both RTL and TB filesets, but Resolve has already removed
+        # any overlap so files are not emitted twice.
         targets += (
             Target(
                 name="sim",
@@ -162,12 +148,11 @@ def to_manifest(
 
 
 def _tb_top_comment(alternatives: tuple[str, ...]) -> str | None:
-    """The warning comment above ``toplevel``, or `None` when nothing was
-    ambiguous.
+    """Return a YAML warning comment for an auto-chosen simulation top.
 
-    `alternatives` arrives sorted from Resolve, so the comment is the same on
-    every run. One obvious testbench produces no alternatives and so no
-    comment: a tree that was never in doubt must not be told to go and check.
+    If the simulation top was chosen from several plausible candidates, the
+    generated file should say so where the user will see it. If there was no
+    ambiguity, no comment is needed.
     """
     if not alternatives:
         return None
@@ -179,7 +164,7 @@ def _tb_top_comment(alternatives: tuple[str, ...]) -> str | None:
 
 
 def _file_entry(path: Path, model: ProjectModel, core_dir: Path) -> FileEntry:
-    """One compile-order entry, relative to where the ``.core`` will sit."""
+    """Build one emitted file entry relative to the `.core` file location."""
     return FileEntry(
         path=Path(os.path.relpath(path, core_dir)).as_posix(),
         file_type=FILE_TYPES[_lang_of(path)],
@@ -188,23 +173,21 @@ def _file_entry(path: Path, model: ProjectModel, core_dir: Path) -> FileEntry:
 
 
 def _dominant(files: tuple[FileEntry, ...]) -> str:
-    """The fileset-level file type: the most common one across `files`.
+    """Return the most common file type in a fileset.
 
-    A tie goes to the alphabetically-first type name: arbitrary, but the same
-    on every run. `to_manifest` fills `FileEntry.file_type` on every entry;
-    `emit` reads dominance back out of the fileset and drops the per-file
-    value wherever it matches, so only the odd file out carries one.
+    This becomes the fileset-level `file_type`. Individual files only need
+    their own `file_type` entry later if they differ from this dominant value.
     """
     counts = Counter(entry.file_type for entry in files)
     return min(counts, key=lambda file_type: (-counts[file_type], file_type))
 
 
 def _lang_of(path: Path) -> Lang:
-    """The language of a path Scan accepted; unknown extensions cannot occur.
+    """Return the language for a scanned source path.
 
-    Scan only collects the extensions in `SOURCE_SUFFIXES`, so failing here
-    means a caller fed `to_manifest` paths that never went through the
-    pipeline. That is worth a loud failure rather than a guess.
+    All paths reaching this function are expected to come from the scan stage.
+    If a path has an unsupported extension here, that indicates invalid input
+    to the emitter rather than a normal runtime condition.
     """
     language = lang_for_path(path)
     if language is None:
@@ -213,11 +196,10 @@ def _lang_of(path: Path) -> Lang:
 
 
 def _sanitize_vlnv_part(text: str) -> str:
-    """Fold a directory name into fusesoc's ``[A-Za-z0-9_.-]`` charset.
+    """Normalize a default VLNV part to FuseSoC's accepted character set.
 
-    Runs of disallowed characters become one ``_``; sanitization artefacts at
-    the ends are stripped. A name with nothing salvageable falls back to
-    ``core``, because an empty VLNV name part fails fusesoc's parser.
+    Unsupported character runs collapse to `_`, and a completely unusable name
+    falls back to `core` so the VLNV still remains valid.
     """
     cleaned = _VLNV_PART_RE.sub("_", text).strip("_")
     return cleaned or "core"
@@ -229,11 +211,13 @@ def _sanitize_vlnv_part(text: str) -> str:
 
 
 def emit(manifest: CoreManifest) -> str:
-    """Render `manifest` as the full text of a ``.core`` file.
+    """Render a structured manifest as the full text of a `.core` file.
 
-    First line exactly ``CAPI=2:``, then the generated-by comment, then the
-    YAML body. Pure: no filesystem, no global state, byte-identical output
-    for equal manifests.
+    The result starts with the required `CAPI=2:` line, followed by a generated
+    header comment and the YAML body.
+
+    This function is pure: it does not read files, write files, or depend on
+    global mutable state.
     """
     document = CommentedMap()
     document["name"] = manifest.vlnv
@@ -275,7 +259,11 @@ def _fileset_yaml(fileset: Fileset) -> CommentedMap:
 
 
 def _file_yaml(entry: FileEntry, dominant: str | None) -> str | CommentedMap:
-    """One files-list item: a bare path unless an attribute earns a map."""
+    """Render one file item for a CAPI2 files list.
+
+    A plain path is used when the file needs no extra attributes. Otherwise,
+    the file is emitted as a mapping with only the attributes that matter.
+    """
     attributes = CommentedMap()
     if entry.file_type is not None and entry.file_type != dominant:
         attributes["file_type"] = entry.file_type
@@ -299,8 +287,8 @@ def _target_yaml(target: Target) -> CommentedMap:
     if target.tools:
         rendered["tools"] = _tools_yaml(target.tools)
     if target.toplevel_comment and "toplevel" in rendered:
-        # Targets always sit two levels down (``targets: <name>: ...``), so
-        # their keys are indented by four, and ruamel has to be told the column.
+        # Targets always appear two mapping levels deep under `targets:`, so
+        # ruamel needs the matching indentation column for the attached comment.
         rendered.yaml_set_comment_before_after_key(
             "toplevel", before=target.toplevel_comment, indent=_TARGET_KEY_INDENT
         )
@@ -308,11 +296,10 @@ def _target_yaml(target: Target) -> CommentedMap:
 
 
 def _tools_yaml(options: tuple[ToolOption, ...]) -> CommentedMap:
-    """Group flat `ToolOption` entries back into ``{tool: {key: value}}``.
+    """Group flat tool options into the nested CAPI2 `tools:` structure.
 
-    Insertion order is the entry order, which is fixed in source, so no
-    sorting is needed to keep the output stable, and none is wanted: the order
-    a tool's options are written in is the order they were decided in.
+    The order is kept exactly as supplied so emitted output stays stable and so
+    the written option order matches the order chosen by the code.
     """
     rendered = CommentedMap()
     for option in options:
