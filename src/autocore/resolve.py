@@ -669,7 +669,7 @@ def _compile_order(
     root: Path,
 ) -> tuple[tuple[Path, ...], list[Warning]]:
     """Produce a stable dependency-first compile order.
-    
+
     This is a deterministic topological sort. When several files are currently
     ready, alphabetical path order decides which one comes next.
 

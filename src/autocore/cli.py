@@ -285,7 +285,8 @@ either writes the result to a file or prints it to stdout under `--dry-run`.
         # overwrite-refusal promise: that is about existing *files*.
         output.parent.mkdir(parents=True, exist_ok=True)
         write_core(result.text, output, force=force)
-    except OSError as exc:  # FileExistsError is the overwrite refusal; the rest is the filesystem
+    # FileExistsError is the overwrite refusal; the rest is the filesystem.
+    except OSError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
     if not quiet:

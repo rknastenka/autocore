@@ -319,7 +319,7 @@ class ToolOption:
     Most tool configuration is intentionally out of scope for autocore. The few
     options that do appear here are those the project can infer reliably from
     the source tree and needs in order to emit a usable target.
-    
+
     the `sim` target says `verilator: {mode: binary}`, because edalize
     otherwise defaults Verilator to `cc` mode and a self-contained
     SystemVerilog testbench with no C++ driver cannot link. Whether the tree
