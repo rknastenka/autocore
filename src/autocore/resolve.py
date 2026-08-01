@@ -1,21 +1,16 @@
 """Stage 3: Resolve.
 
-Turns per-file facts into one `ProjectModel`: a symbol table, a dependency
-graph, a detected top, the transitive closure of that top as the rtl set, a
-compile order, and resolved includes. Hand-rolled adjacency dicts; only a topo
-sort and root-finding are needed, so there is no graph library. Nothing here
-prompts and nothing here is fatal: every problem becomes a `Warning`, and the
-one prompt trigger this stage can produce, `MultipleTops`, is returned as data
-with the automatic fallback already applied.
+Resolve the scanned-and-parsed project into one final model.
 
-The order of work is dictated by two dependencies between the steps. Include
-matching has to happen before top detection and compile order, because the rtl
-closure follows include edges and the topo sort runs over them; and the
-closure has to exist before `include_files` can be classified, because only
-headers inside it are part of the project. So: symbols, reference edges,
-testbench classification, include matching, top detection, the rtl closure,
-the testbench top and its closure, compile order, and finally the include
-classification.
+This module takes per-file facts and turns them into a resolved project view:
+a symbol table, dependency edges, testbench classification, include matching,
+a chosen RTL top, compile order, and the warnings/ambiguities needed by later
+stages.
+
+The resolver is intentionally pure. It does not touch the filesystem, prompt
+the user, or write output. Its job is to make the best deterministic decision
+it can, surface anything unclear as data, and let higher layers decide how to
+present that information.
 
 The rtl set is the transitive closure of the detected top, following
 instantiation, package-import and include edges. Files that were scanned but
@@ -61,13 +56,12 @@ from autocore.models import (
 )
 
 __all__ = ["TB_FILENAME_PATTERNS", "resolve"]
-
-#: The filename half of the testbench rule. Matched against the lowercased
-#: basename, consistent with Scan's case-insensitive extension handling.
-#: ``--tb-glob`` *replaces* this tuple rather than extending it. ``testbench.*``
-#: earns its place because tool-specific benches are often named exactly that,
-#: and the evidence half cannot reach them: they lean on cross-file macros and
-#: never parse, so a filename is all there is to go on.
+#: Default filename patterns used by the testbench classifier.
+#: These are matched against the lowercased basename only.
+#:
+#: `--tb-glob` replaces this tuple for a given run rather than extending it.
+#: That keeps the rule easy to reason about: either the built-in patterns
+#: are in effect, or the caller has supplied a full replacement set.
 TB_FILENAME_PATTERNS: tuple[str, ...] = (
     "*_tb.*",
     "tb_*.*",
@@ -84,30 +78,20 @@ def resolve(
     tb_globs: Sequence[str] | None = None,
     tb_overrides: Mapping[Path, TbDirective] | None = None,
 ) -> ProjectModel:
-    """Build the `ProjectModel` for one scanned-and-parsed tree.
+    """Build the resolved project model for one scanned-and-parsed tree.
 
-    Pure: nothing here touches the filesystem, so hand-built `ScanResult` and
-    `ParseResult` pairs work without any files existing. `parsed.warnings`
-    are carried through into `ProjectModel.warnings`.
+    This function is the heart of Stage 3. It combines scan results and parse
+    facts into one `ProjectModel` that later stages can emit as a `.core` file.
 
-    `top` is the ``--top`` escape hatch. A caller that has already decided the
-    toplevel skips detection entirely: no `MultipleTops` ambiguity, no
-    fallback, no detection warnings. The name is trusted to be declared
-    somewhere in the tree (`autocore.generate` checks before calling); an
-    undeclared name gives an empty closure rather than an error.
+    The resolver is pure: it does not read files, ask questions, or write
+    anything. It only transforms inputs into a deterministic result.
 
-    `tb_overrides` is the same escape hatch for testbench classification, and
-    the shape `interact.py` feeds an answered `UnclearTbStatus` back through.
-    A caller that has already decided whether a file is a testbench maps its
-    path to `TbDirective.TB` or `TbDirective.RTL`, and that wins outright: no
-    ambiguity for it, no warning about it. Paths not in the mapping are
-    classified by the ordinary rules.
-
-    `tb_globs` is ``--tb-glob``: filename patterns that **replace**
-    `TB_FILENAME_PATTERNS` for this run. The evidence half and the magic
-    comments are unaffected, so a tree can turn the filename rule right off
-    with a glob matching nothing and still classify by evidence.
+    `top` lets a caller force the RTL top and skip automatic top detection.
+    `tb_overrides` lets a caller force specific files to be treated as testbench
+    or RTL. `tb_globs` replaces the built-in filename patterns used by the
+    testbench classifier for this run.
     """
+
     root = scan.root
     warnings: list[Warning] = list(parsed.warnings)
 
@@ -203,8 +187,9 @@ def _symbol_table(
 ) -> tuple[dict[str, Path], list[Warning]]:
     """Declared name -> declaring file; first declaration by sorted path wins.
 
-    `files` arrives sorted by path (the `ParseResult` contract), so plain
-    iteration order *is* sorted-path order and the first writer wins.
+    If the same name is declared in more than one file, the first declaration
+    by sorted path wins and later ones become warnings. This keeps the outcome
+    deterministic and makes the rule easy to explain.
     """
     symbols: dict[str, Path] = {}
     warnings: list[Warning] = []
@@ -233,13 +218,15 @@ def _symbol_table(
 def _reference_edges(
     files: tuple[FileFacts, ...], symbols: dict[str, Path]
 ) -> tuple[dict[Path, set[Path]], frozenset[str], list[Warning]]:
-    """A depends on B iff A instantiates or imports something B declares.
+    """Build dependency edges from instantiations and package imports.
 
-    A name declared nowhere becomes an external ref plus one warning, never a
-    failure: vendor primitives and encrypted IP are the normal case here.
-    Self-edges are dropped, because a file cannot depend on itself, and a
-    module instantiating a sibling declared in the same file is an intra-file
-    matter the graph does not need to see.
+    A file depends on another file when it instantiates or imports a name that
+    the other file declares.
+
+    Names declared nowhere in the tree are treated as external references
+    rather than hard failures. That keeps the resolver usable for real-world
+    trees that rely on vendor primitives, encrypted IP, or sources outside the
+    scanned project.
     """
     deps: dict[Path, set[Path]] = {}
     users_of: dict[str, list[Path]] = {}
@@ -276,25 +263,18 @@ def _classify_testbenches(
     tb_globs: Sequence[str] | None,
     overrides: Mapping[Path, TbDirective],
 ) -> tuple[frozenset[Path], list[Warning], list[Ambiguity]]:
-    """Split the scanned tree into testbenches and everything else.
+    """Classify scanned files as testbench or non-testbench.
 
-    The rule in precedence order: a caller's `overrides` entry decides, then a
-    magic comment decides, in either direction; otherwise the filename
-    patterns or strong evidence (``$finish``/``$stop`` **and** an empty port
-    list) make it a testbench; otherwise it is RTL. Evidence that is real but
-    not strong enough to classify becomes an `UnclearTbStatus` *and* a warning
-    saying which way the file fell: the ambiguity is what `interact.py` may
-    turn into a question, the warning is what every non-prompting path owes
-    the user instead. Nothing here asks anybody anything; that gate lives in
-    `interact.py` and nowhere else.
+    The decision order is intentional and stable:
 
-    An override outranks a magic comment because it is the newer statement of
-    intent. The two cannot actually collide, since a file carrying a comment
-    is never unclear and so is never asked about.
+    1. A caller override wins.
+    2. An explicit autocore directive wins.
+    3. Built-in or caller-supplied filename patterns may classify the file.
+    4. Strong parsed evidence may classify the file.
+    5. Partial evidence becomes an ambiguity and falls back to RTL.
 
-    Iteration is over `scan.files`, which is sorted and complete: a file Parse
-    produced no facts for still gets classified, on its filename alone, which
-    is the only rule that can reach an unparseable testbench.
+    This function never prompts the user. It only records warnings and
+    ambiguities so a higher layer can decide whether to ask for help.
     """
     # Both sides are lowercased, so `--tb-glob '*_TB.*'` behaves like the
     # built-in patterns do rather than silently matching nothing.
@@ -335,6 +315,7 @@ def _classify_testbenches(
         elif directive is TbDirective.RTL:
             pass  # beats the filename patterns and the evidence alike
         elif _is_testbench_filename(path.name, patterns) or evidence.strong:
+            """Return whether a basename matches the active testbench patterns."""
             testbenches.add(path)
         elif evidence.partial:
             ambiguities.append(UnclearTbStatus(path))
@@ -384,12 +365,12 @@ def _effective_include_candidates(
 def _resolve_includes(
     files: tuple[FileFacts, ...], candidates: frozenset[Path]
 ) -> tuple[dict[Path, set[Path]], list[Warning]]:
-    """Match written include strings against candidates by basename.
+    """Match written include strings to scanned include candidates.
 
-    Every candidate sharing the basename matches. With only the written string
-    to go on there is no way to prefer one `defs.svh` over another, and
-    over-including keeps the emitted core buildable. An include that matches
-    nothing produces a warning; it must not vanish silently.
+    Matching is done by basename. If several candidates share the same
+    basename, they all match. That is conservative, but it avoids silently
+    dropping a possible dependency when the source text does not give enough
+    information to prefer one file over another.
     """
     by_basename: dict[str, list[Path]] = {}
     for path in sorted(candidates, key=Path.as_posix):
@@ -433,13 +414,13 @@ def _detect_top(
     deps: dict[Path, set[Path]],
     include_edges: dict[Path, set[Path]],
 ) -> tuple[str, list[Warning], tuple[Ambiguity, ...]]:
-    """Candidates are names no *other* RTL file references.
+    """Choose the RTL top from the non-testbench part of the tree.
 
-    File granularity is deliberate: a wrapper and the core it instantiates
-    inside the same file are both candidates. That is what keeps a core on the
-    candidate list beside the bus wrappers around it when a single file
-    declares all of them, which is a common shape. It also keeps a
-    self-recursive module a candidate for free.
+    A top candidate is a declared name that no other RTL file references.
+
+    If there is exactly one candidate, it wins directly. If there are several,
+    the resolver applies a deterministic fallback and records the ambiguity so
+    interactive layers may present that choice to the user later.
     """
     rtl_facts = [facts for facts in files if facts.path not in testbenches]
     declared = sorted(
@@ -494,22 +475,15 @@ def _detect_tb_top(
     deps: dict[Path, set[Path]],
     include_edges: dict[Path, set[Path]],
 ) -> tuple[str, list[Warning], tuple[str, ...]]:
-    """The testbench no *other* testbench instantiates.
+    """Choose the simulation top from the files classified as testbenches.
 
-    The mirror image of `_detect_top`, over the other half of the tree, with
-    one difference that carries the whole idea: only testbench-to-testbench
-    references disqualify a candidate. A bench instantiating the rtl top is
-    the normal case and must stay a candidate, because that is what a bench
-    is for.
+    This mirrors `_detect_top`, but only testbench-to-testbench references can
+    disqualify a candidate. A testbench that instantiates the RTL top should
+    still remain a valid testbench-top candidate.
 
-    Returns the chosen toplevel, its warnings, and the names it beat. Several
-    candidates reuse the same fallback as the rtl top (directory name, then
-    largest closure, then alphabetical) with a warning, but produce no
-    ambiguity and never a prompt: exactly one sim target with exactly one
-    toplevel is emitted whatever happens, and the losers come back as
-    alternatives so Emit can flag the guess in the file itself. No testbenches
-    at all means no sim target, which is an empty string here rather than a
-    warning about it.
+    The function always picks one deterministic answer when testbench modules
+    exist, and returns any losing alternatives so later stages can annotate the
+    emitted file if the choice was a guess.
     """
     tb_facts = [facts for facts in files if facts.path in testbenches]
     declared = sorted(
@@ -567,8 +541,7 @@ def _closure_sizes(
     include_edges: dict[Path, set[Path]],
     testbenches: frozenset[Path],
 ) -> dict[str, int]:
-    """How many files each candidate drags behind it: the tiebreak, and the
-    number a prompt shows so the automatic answer is legible."""
+    """Measure how many files each candidate pulls into its transitive closure."""
     return {
         name: len(_closure(symbols.get(name), deps, include_edges, testbenches))
         for name in candidates
@@ -578,15 +551,15 @@ def _closure_sizes(
 def _fallback_top(
     candidates: list[str], root: Path, sizes: dict[str, int]
 ) -> tuple[str, str]:
-    """Pick a top without asking: the candidate matching the project directory
-    name, else the one with the largest transitive closure, with alphabetical
-    order breaking genuine ties.
+    """Pick a deterministic top when several candidates are possible.
 
-    Closure size is the better guess at "the real top". A leaf that only fell
-    off the graph because an ``ifdef`` switched it off has a closure of one,
-    while the module that instantiates most of the tree drags the whole tree
-    behind it. `candidates` is already sorted, so the first strictly-largest
-    closure wins and equal closures fall back to name order.
+    The preference order is:
+    1. A candidate whose name matches the project directory name.
+    2. The candidate with the largest transitive closure.
+    3. Alphabetical order to break a genuine tie.
+
+    The returned string explains why the winner was chosen so callers can turn
+    the decision into a human-readable warning.
     """
     directory = _sanitize(root.name)
     for name in candidates:
@@ -607,11 +580,10 @@ def _fallback_top(
 
 
 def _sanitize(name: str) -> str:
-    """Fold a directory or module name so the two can be compared.
+    """Normalize a directory or module name for loose comparison.
 
-    `my-chip/` should claim a module named `my_chip`: directory names use
-    separators identifiers cannot, so both sides are lowercased and squeezed
-    to `[a-z0-9_]` before comparing.
+    This helps project directory names and HDL identifiers compare sensibly
+    even when they differ in case or separator style.
     """
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
@@ -627,8 +599,12 @@ def _closure(
     include_edges: dict[Path, set[Path]],
     testbenches: frozenset[Path],
 ) -> set[Path]:
-    """Every file reachable from `start` over instantiation, import and
-    include edges, never entering a testbench."""
+    """Return every file reachable from `start` through dependency edges.
+
+    The closure follows instantiation, package-import, and include edges.
+    Testbench files are treated as off-limits when building the RTL closure so
+    they do not leak into the emitted RTL fileset.
+    """
     if start is None or start in testbenches:
         return set()
     reached = {start}
@@ -654,15 +630,14 @@ def _dropped_testbench_warnings(
     tb_top: str,
     root: Path,
 ) -> list[Warning]:
-    """Name the testbenches that were classified and then left out anyway.
+    """Warn about files classified as testbenches but left out of the TB fileset.
 
-    A sim target is built from one toplevel, so a bench outside that
-    toplevel's closure has nowhere to go, and a tree whose benches declare
-    nothing at all gets no sim target, so all of them do. Either way the file
-    is in neither fileset: classified out of rtl, dropped from tb. That is a
-    defensible outcome but not a silent one, because nothing the user wrote
-    may vanish without a word. The mirror of `ExcludedFromRtl`, down to
-    putting the names on `Warning.details` and the count in the message.
+    This happens when a file is recognized as a testbench, but it is not part
+    of the chosen simulation-top closure, or when no usable simulation top can
+    be detected at all.
+
+    The file should not disappear silently, so the warning names the dropped
+    files and explains why they were excluded.
     """
     dropped = sorted(_rel(path, root) for path in testbenches if path not in tb_files)
     if not dropped:
@@ -693,16 +668,14 @@ def _compile_order(
     include_edges: dict[Path, set[Path]],
     root: Path,
 ) -> tuple[tuple[Path, ...], list[Warning]]:
-    """Stable topological sort of the rtl closure, dependencies first.
+    """Produce a stable dependency-first compile order.
+    
+    This is a deterministic topological sort. When several files are currently
+    ready, alphabetical path order decides which one comes next.
 
-    Ties break alphabetically: of everything currently free of unmet
-    dependencies, the first by POSIX path is emitted, one node at a time.
-    Emitting a whole ready batch at once would let a later name jump ahead of
-    a file it unblocks. A cycle breaks at the alphabetically-last edge that
-    actually closes one, with a warning, and the sort carries on. "Closes
-    one" matters: when the sort is stuck, edges from innocent bystanders that
-    merely depend on a cycle are also still unmet, and cutting one of those
-    would move the bystander ahead of its own dependencies.
+    If a cycle prevents progress, the resolver breaks one specific edge,
+    records a warning, and continues. The goal is to keep producing a usable,
+    explainable result rather than fail outright.
 
     A node with no entry in either edge dict (a matched header that never
     parsed) simply has no dependencies and sorts early, which is where a
@@ -778,11 +751,11 @@ def _reaches(source: Path, target: Path, remaining: dict[Path, set[Path]]) -> bo
 
 
 def _rel(path: Path, root: Path) -> str:
-    """`path` as the tree-relative POSIX string a warning is allowed to show.
+    """Return a tree-relative POSIX path suitable for warnings.
 
-    Warning messages must never embed the absolute checkout location: the same
-    tree resolved from two checkouts must produce identical models up to
-    `root`.
+    Warnings should never depend on the absolute checkout location, so this
+    helper converts paths into stable project-relative strings whenever
+    possible.
     """
     try:
         return path.relative_to(root).as_posix()
