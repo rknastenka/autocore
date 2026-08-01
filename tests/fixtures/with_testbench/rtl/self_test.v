@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 // autocore: rtl
 //
 // The magic comment forcing the RTL direction: this file's name matches the
