@@ -1,21 +1,19 @@
-"""auto-core: scan an RTL tree, emit one FuseSoC CAPI2 ``.core`` file.
+"""auto-core: scan an RTL tree and produce a single FuseSoC CAPI2 `.core` file.
 
-``generate()`` is the library API and the single integration point. The CLI
-and any future FuseSoC generator are thin entry points over this one function.
+This module is the main public entry point for the library.
 
-It returns a `GenerateResult` rather than a bare manifest because every entry
-point needs more than CAPI2 data: the warnings that go to stderr and the
-rendered text that goes to the output file both travel with the manifest.
-It does no I/O beyond reading the tree. Where the text lands and where the
-warnings print is each entry point's own business.
+`generate()` runs the full pipeline and returns everything a caller may need:
+the structured manifest, the rendered `.core` text, and any warnings collected
+along the way. The CLI and any future integration layers should stay thin and
+build on top of this API instead of re-implementing pipeline logic.
 
-`regenerate()` is the interactive-layer counterpart. An answered ambiguity
-changes what Resolve decides, never what Scan found or what Parse read, so
-re-running those two stages would be waste. It takes a finished
-`GenerateResult` and new options and re-runs Resolve and Emit alone, producing
-a result indistinguishable from one generated with those options from the
-start.
+`regenerate()` is the lightweight companion to `generate()`. It reuses an
+existing scan/parse result and only re-runs the later stages when the caller
+changes options that affect resolution or emission. This is mainly useful for
+interactive flows, where a user answers a question and the project needs to be
+re-resolved without re-reading the whole tree.
 """
+
 
 from __future__ import annotations
 
@@ -43,29 +41,31 @@ __version__ = "0.1.0"
 
 
 class GenerateError(Exception):
-    """A fatal pipeline-level problem: the run produced nothing usable.
+    """Raised when a requested pipeline action cannot be completed at all.
 
-    Deliberately rare, since the pipeline's rule is "warn, never fail". It is
-    reserved for requests that cannot be honoured at all, like a forced top
-    that no parsed file declares. The CLI maps it to exit code 1.
+    This should be rare. The general rule of the pipeline is to keep going and
+    collect warnings instead of failing. This exception is reserved for cases
+    where the request itself cannot be honored, such as forcing a top module
+    that does not exist in the parsed tree.
     """
 
 
 @dataclass(frozen=True)
 class GenerateOptions:
-    """The knobs of `generate`, mirroring the CLI flags they back.
+    """Options that control one `generate()` or `regenerate()` run.
 
-    ``core_dir`` is the directory the ``.core`` file will live in, and every
-    emitted file path is relative to it. Defaults to the scanned root, which
-    is where the default output lands.
+    These fields mirror the choices a caller or CLI user can make, such as the
+    core name, library name, top module, preprocessor defines, and testbench
+    classification overrides.
 
-    ``tb_globs`` is ``--tb-glob``: when non-empty it *replaces* the built-in
-    testbench filename patterns for the run, leaving the evidence half and
-    the magic comments untouched.
+    `core_dir` is the directory where the `.core` file will live. Emitted file
+    paths are made relative to that location.
 
-    ``tb_overrides`` is how an answered `UnclearTbStatus` comes back into
-    the pipeline, as ``(path, TbDirective)`` pairs rather than a mapping so
-    that these options stay frozen and comparable like every other field.
+    `tb_globs` replaces the built-in filename patterns used to recognize
+    testbenches for this run.
+
+    `tb_overrides` is mainly for interactive use. It lets a caller feed an
+    explicit testbench/RTL decision back into the pipeline for specific files.
     """
 
     name: str | None = None
@@ -79,16 +79,16 @@ class GenerateOptions:
 
 @dataclass(frozen=True)
 class GenerateResult:
-    """Everything one pipeline run produced, and everything it read.
+    """The full result of one pipeline run.
 
-    ``text`` is the complete rendered ``.core`` file. ``model.warnings`` is
-    what an entry point prints to stderr. ``manifest`` is the structured
-    CAPI2 view for callers that want data rather than text.
+    This includes:
+    - `manifest`: the structured CAPI2 representation
+    - `text`: the rendered `.core` file contents
+    - `model`: the resolved project model, including warnings
 
-    ``root``, ``scanned`` and ``parsed`` are the run's inputs, carried so
-    `regenerate` can re-decide without re-reading the tree. They are why an
-    interactive entry point costs one filesystem walk and one parse however
-    many questions it asks.
+    It also keeps the original inputs to the later stages (`root`, `scanned`,
+    and `parsed`) so the caller can re-run resolution and emission without
+    scanning or parsing the tree again.
     """
 
     model: ProjectModel
@@ -102,12 +102,20 @@ class GenerateResult:
 def generate(
     path: Path | str, options: GenerateOptions | None = None
 ) -> GenerateResult:
-    """Run Scan -> Parse -> Resolve -> Emit over the tree at ``path``.
+    """Run the full pipeline for the RTL tree at `path`.
 
-    Reads the tree, writes nothing, prints nothing. Raises `GenerateError`
-    when ``options.top`` names something no parsed file declares, and
-    ``NotADirectoryError`` when ``path`` is not a directory; everything else
-    the pipeline can dislike about a tree becomes a `Warning` on the model.
+    pipeline: Scan -> Parse -> Resolve -> Emit.
+
+    This function scans the tree, parses the source files, resolves the project
+    structure, and renders the final `.core` output.
+
+    It does not write files or print warnings by itself. Those responsibilities
+    belong to the caller, such as the CLI.
+
+    Raises:
+        GenerateError: If `options.top` names a module that is not declared by
+            any parsed file.
+        NotADirectoryError: If `path` is not a directory.
     """
     # Imported here rather than at module top for two reasons: `emit` reads
     # `__version__` back from this partially-initialised package, and the
@@ -126,18 +134,17 @@ def generate(
 def regenerate(
     previous: GenerateResult, options: GenerateOptions | None = None
 ) -> GenerateResult:
-    """Re-run Resolve and Emit over `previous`'s tree with new `options`.
+    """Re-run only the later pipeline stages(Resolve/Emit) using a previous result.
 
-    Answering an ambiguity moves nothing upstream of Resolve: which module
-    is the toplevel and whether a file is a testbench change what the graph
-    *means*, not which files exist or what they declare. So this reuses
-    `previous.scanned` and `previous.parsed` verbatim and produces exactly
-    what `generate` would have produced with these options from the start.
+    This is useful when scan/parse data is still valid, but the caller wants to
+    change resolution-time options such as top selection or testbench
+    classification.
 
-    ``options.defines`` is the one field it cannot honour, since defines
-    are consumed by Parse; a caller changing them must call `generate`
-    again.
+    It reuses the previous scan and parse outputs and only runs resolve + emit
+    again. If the caller changes parse-time options such as `defines`, they
+    should call `generate()` instead.
     """
+
     return _resolve_and_emit(
         previous.root,
         previous.scanned,
@@ -152,7 +159,12 @@ def _resolve_and_emit(
     parsed: ParseResult,
     options: GenerateOptions,
 ) -> GenerateResult:
-    """The back half of the pipeline, shared by `generate` and `regenerate`."""
+    """Run the shared resolve + emit part of the pipeline.
+
+    Both `generate()` and `regenerate()` end up here. This helper validates any
+    forced top selection, builds the resolved project model, converts it into a
+    manifest, and renders the final `.core` text.
+    """
     from autocore.emit import emit, to_manifest
     from autocore.resolve import resolve
 
