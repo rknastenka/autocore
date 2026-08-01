@@ -1,22 +1,17 @@
 """Stage 1: Scan.
 
-Collect ``.v .sv .vh .svh .vhd .vhdl`` under a target directory and hand Parse a
-sorted path list. **Nothing here parses.** The only judgement Scan makes about a
-file's contents is its extension.
+Scan a project tree and collect source files.
 
-Three rules carry the weight:
+This module is responsible for finding HDL source files under a root directory
+and returning them in a stable order for later pipeline stages.
 
-* ``.gitignore`` is honoured via pathspec, with git semantics rather than glob
-  semantics: nested ignore files shadow shallower ones, ``!`` re-includes, and
-  a file under an ignored directory can never be re-included because the walk
-  never descends there.
-* ``.git/``, ``build/``, ``sim_build/``, ``work/`` and hidden directories are
-  skipped unconditionally, at any depth, ignore file or not.
-* Symlinks are followed, guarded by a visited set keyed on ``(st_dev, st_ino)``
-  so a directory loop terminates instead of recursing forever.
+Scan does not parse file contents. Its only content-level decision is based on
+file extension. It also applies `.gitignore` rules, skips selected directories,
+and follows symlinks safely so the walk stays practical on real project trees.
 
-Output order is by POSIX path relative to the scan root, which makes it
-independent of readdir order and of where the tree is checked out.
+A key design goal here is deterministic output: the same tree should produce
+the same ordered file list regardless of filesystem iteration order or checkout
+location.
 """
 
 from __future__ import annotations
@@ -30,8 +25,9 @@ from autocore.models import SOURCE_SUFFIXES, ScanResult, is_include_suffix
 
 __all__ = ["ALWAYS_SKIP_DIRS", "GITIGNORE_NAME", "scan"]
 
-#: Skipped wherever they appear, regardless of ``.gitignore``. Matched as
-#: whole directory names, so ``builds/`` and ``workspace/`` survive.
+#: Directory names that are always skipped during scanning.
+#: Matching is by whole directory name, so names like `builds/` or
+#: `workspace/` are not affected.
 ALWAYS_SKIP_DIRS: frozenset[str] = frozenset({".git", "build", "sim_build", "work"})
 
 GITIGNORE_NAME = ".gitignore"
@@ -42,11 +38,15 @@ _IgnoreStack = tuple[tuple[str, GitIgnoreSpec], ...]
 
 
 def scan(root: Path | str) -> ScanResult:
-    """Collect every source file under ``root``.
+    """Scan `root` and collect all supported source files.
 
-    Raises ``NotADirectoryError`` if ``root`` is not a directory (symlinks to
-    directories are fine). Unreadable directories and dangling symlinks are
-    skipped silently: Scan never fails on a hostile tree, it returns less.
+    The result is a stable, sorted list of files that later stages can parse.
+
+    Raises:
+        NotADirectoryError: If `root` is not a directory.
+
+    Unreadable directories and broken symlinks are skipped quietly. The scanner
+    prefers returning a partial result over failing on a messy tree.
     """
     root = Path(root)
     if not root.is_dir():
@@ -55,9 +55,8 @@ def scan(root: Path | str) -> ScanResult:
     found: list[tuple[str, Path]] = []
     _walk(root, root, "", (), found, visited=set())
 
-    # Sort on the relative POSIX path, not the Path object: this is the one
-    # place the output order is decided, and it must not depend on the absolute
-    # location of the tree.
+    # Sort by the tree-relative POSIX path so output order stays stable and
+    # does not depend on the absolute checkout location.
     found.sort(key=lambda item: item[0])
     files = tuple(path for _, path in found)
 
@@ -76,10 +75,15 @@ def _walk(
     found: list[tuple[str, Path]],
     visited: set[tuple[int, int]],
 ) -> None:
-    """Recurse into ``directory``, appending ``(relative posix, path)`` pairs."""
+    """Walk one directory and append matching files to `found`.
+
+    Collected entries are stored as `(relative_posix_path, absolute_path)`
+    pairs so the caller can sort deterministically by the portable relative
+    path while still returning real `Path` objects.
+    """
     identity = _identity(directory)
     if identity is None or identity in visited:
-        return  # unreadable, or a symlink back into a directory we already did
+        return  # unreadable, or a symlink back to a directory already seen
     visited.add(identity)
 
     spec = _load_gitignore(directory)
@@ -96,8 +100,8 @@ def _walk(
         child_rel = f"{rel}/{entry.name}" if rel else entry.name
         try:
             is_dir = entry.is_dir(follow_symlinks=True)
-            # Symlinks are followed, so this also rejects the dangling ones:
-            # a broken `foo.v` link must not reach Parse as a source file.
+            # Symlinks are followed here, which also filters out broken ones:
+            # a dangling `foo.v` link should not reach the parse stage.
             is_file = not is_dir and entry.is_file(follow_symlinks=True)
         except OSError:
             continue  # symlink loop, or an entry we are not allowed to stat
@@ -105,8 +109,8 @@ def _walk(
         if is_dir:
             if entry.name in ALWAYS_SKIP_DIRS or entry.name.startswith("."):
                 continue
-            # A directory only matches a `dir/` pattern when it is offered with
-            # a trailing slash; pathspec has no other way to tell the two apart.
+            # `pathspec` only treats this as a directory match if the path has
+            # a trailing slash, so add one before checking ignore rules.
             if _is_ignored(stack, f"{child_rel}/"):
                 continue
             _walk(root / child_rel, root, child_rel, stack, found, visited)
@@ -117,10 +121,10 @@ def _walk(
 
 
 def _identity(directory: Path) -> tuple[int, int] | None:
-    """Filesystem identity of ``directory``, or ``None`` if it cannot be read.
+    """Return a filesystem identity for `directory`, or `None` if unreadable.
 
-    ``(st_dev, st_ino)`` rather than a resolved path: it is what actually
-    distinguishes two directories, and it costs one stat we would pay anyway.
+    The identity is `(st_dev, st_ino)`, which lets the scanner detect directory
+    loops even when symlinks or multiple paths point to the same place.
     """
     try:
         info = directory.stat()  # follows symlinks - that is the point
@@ -130,11 +134,10 @@ def _identity(directory: Path) -> tuple[int, int] | None:
 
 
 def _load_gitignore(directory: Path) -> GitIgnoreSpec | None:
-    """Compile ``directory/.gitignore``, or ``None`` if there isn't a usable one.
+    """Load and compile `directory/.gitignore`, if present and readable.
 
-    ``GitIgnoreSpec.from_lines`` takes the *lines* first in pathspec 1.x (0.x
-    put the pattern factory first), and ``GitIgnoreSpec`` rather than
-    ``PathSpec`` is what reproduces git's precedence rules.
+    This uses `GitIgnoreSpec` so ignore behavior follows Git-style precedence
+    rules rather than plain glob matching.
     """
     try:
         text = (directory / GITIGNORE_NAME).read_text(
@@ -146,12 +149,11 @@ def _load_gitignore(directory: Path) -> GitIgnoreSpec | None:
 
 
 def _is_ignored(stack: _IgnoreStack, rel: str) -> bool:
-    """Resolve ``rel`` against the stack of ``.gitignore`` files above it.
+    """Return whether `rel` should be ignored by the active `.gitignore` stack.
 
-    Git gives the deepest ignore file the final say, so walk the stack inwards
-    out and stop at the first file that has an opinion. pathspec reports that
-    as ``CheckResult.include``: ``True`` matched an ignore pattern, ``False``
-    matched a ``!`` negation, ``None`` no pattern matched at all.
+    The deepest matching `.gitignore` file wins, which matches Git's own
+    precedence rules. A `!` pattern re-includes a path only if the scanner was
+    still able to reach that path in the first place.
     """
     for base, spec in reversed(stack):
         candidate = rel
