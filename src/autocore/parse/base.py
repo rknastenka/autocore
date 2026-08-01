@@ -45,9 +45,8 @@ __all__ = [
     "parse_all",
 ]
 
-#: Below this many files, `parse_all` stays in-process. Spawning interpreters
-#: costs more than parsing a handful of small files, and most fixtures are
-#: smaller than this.
+#: Below this many files, parsing stays in the current process.
+#: Spinning up worker processes costs more than it saves for very small inputs.
 PARALLEL_THRESHOLD = 4
 
 
@@ -66,7 +65,7 @@ class ParseError(Exception):
         self.code = code
 
     def as_warning(self) -> Warning:
-        """The `Warning` this failure becomes in `ParseResult.warnings`."""
+        """Convert this parse failure into the warning stored in `ParseResult`."""
         return Warning(code=self.code, message=self.message, path=self.path)
 
 
@@ -80,7 +79,7 @@ class ParserBackend(Protocol):
     exists.
     """
 
-    #: The extensions-derived languages this backend accepts.
+    #: Languages this backend accepts, based on file extension routing.
     languages: frozenset[Lang]
 
     def parse(self, path: Path, defines: Sequence[str] = ()) -> FileFacts:
@@ -138,7 +137,11 @@ def _run(
     defines: tuple[str, ...],
     max_workers: int | None,
 ) -> list[tuple[FileFacts | None, tuple[Warning, ...]]]:
-    """Parse `paths`, in this process or several, in whatever order finishes."""
+    """Parse the given paths either serially or in parallel.
+
+The returned list reflects completion order when workers are used. Callers are
+responsible for sorting if they need a stable visible order.
+"""
     workers = _worker_count(len(paths), max_workers)
     if workers <= 1:
         return [_parse_one(backend, path, defines) for path in paths]
@@ -149,7 +152,7 @@ def _run(
 
 
 def _worker_count(files: int, max_workers: int | None) -> int:
-    """How many processes to use for `files` files."""
+    """Choose how many worker processes to use for this parse run."""
     if files == 0:
         return 1
     if max_workers is not None:
@@ -182,7 +185,7 @@ def _parse_one(
 
 
 def _unsupported(path: Path, language: Lang | None) -> Warning:
-    """The warning for a file no backend in this run can read."""
+    """Build the warning for a file unsupported by the active backend set."""
     named = language.value if language is not None else "unknown"
     return Warning(
         "UnsupportedLanguage",

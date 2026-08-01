@@ -34,7 +34,12 @@ def parse_sources(
     defines: Sequence[str] = (),
     max_workers: int | None = None,
 ) -> ParseResult:
-    """Parse everything in `scan` with the Verilog/SystemVerilog backend."""
+    """Parse all scanned files using the default source-language backend.
+
+At the moment, this means the pyslang-based Verilog/SystemVerilog backend.
+Unsupported scanned languages are reported as warnings by the shared parse
+driver.
+"""
     return parse_all(
         scan,
         SvSlangBackend.for_tree(scan),
