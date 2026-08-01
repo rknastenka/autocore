@@ -1,18 +1,20 @@
-"""Interactive layer.
+"""Interactive layer for resolver ambiguities.
 
-A wrapper, never a participant. The pipeline classifies, detects and decides
-on its own and hands back `Ambiguity` values as *data*; this module is the
-only thing in auto-core that may turn one of those into a question. Nothing
-here is imported by Scan, Parse, Resolve or Emit, and nothing there ever calls
-back into it — which is what keeps `--yes` output byte-identical to the
-goldens, since a run that does not prompt never reaches this code at all.
+This module is the only part of autocore that may ask the user a question.
 
-**The three-condition gate lives here and nowhere else.** `decide` prompts if
-and only if:
+The pipeline itself stays non-interactive: Resolve produces ambiguities as
+data, and this module decides whether they should be turned into prompts.
+That separation keeps the core pipeline deterministic and makes interactive
+behavior optional.
 
+`decide()` only prompts when all three conditions are true:
 1. stdin is a TTY,
-2. ``--yes`` / ``--non-interactive`` was not passed, and
-3. the model carries at least one `Ambiguity`.
+2. non-interactive mode was not requested, and
+3. the model contains at least one ambiguity.
+
+In every other case, autocore keeps the default resolver decision. Any answers
+collected here are returned as `Decisions`, which the caller can feed back into
+`autocore.regenerate()` to re-run only the later pipeline stages.
 """
 
 from __future__ import annotations
@@ -39,14 +41,15 @@ __all__ = [
     "decide",
 ]
 
-#: The two answers to an `UnclearTbStatus`, and the documented default.
+#: The two possible answers for an unclear testbench classification.
+#: `_RTL` is also the documented default.
 _RTL = "rtl"
 _TB = "tb"
 
 
 @dataclass(frozen=True)
 class Choice:
-    """One selectable answer: the value returned, and the text shown for it."""
+    """Represent one selectable answer in an interactive prompt."""
 
     value: str
     label: str
@@ -217,7 +220,7 @@ def _ask_tb_status(asker: Asker, ambiguity: UnclearTbStatus, root: Path) -> TbDi
 
 
 def _rel(path: Path, root: Path) -> str:
-    """`path` relative to the scanned tree, POSIX-separated."""
+    """Return `path` relative to the scanned tree using POSIX separators."""
     try:
         return path.relative_to(root).as_posix()
     except ValueError:

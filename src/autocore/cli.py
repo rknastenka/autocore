@@ -1,26 +1,18 @@
-"""Command-line entry point.
+"""Command-line entry point for autocore.
 
-A thin skin over ``autocore.generate()``: flags become `GenerateOptions`,
-warnings go to stderr, and the YAML goes to the output file or to stdout
-under ``--dry-run``. No pipeline logic lives here.
+This module is a CLI layer over `autocore.generate()` and
+`autocore.regenerate()`. It turns command-line flags into `GenerateOptions`,
+renders warnings for stderr, and either writes the generated `.core` file or
+prints it to stdout under `--dry-run`.
 
-Exit codes: 0 on success including success-with-warnings; 1 on anything
-fatal, which includes the refusal to overwrite an existing file without
-``--force`` (the invocation was well-formed, the filesystem said no); 2 on a
-usage error, such as a ``--name``/``--library`` outside FuseSoC's VLNV
-charset or a PATH that is not a directory.
+No pipeline logic should live here. The CLI is responsible for argument
+validation, user-facing output, exit behavior, and interactive plumbing, while
+the actual scan/parse/resolve/emit decisions stay inside the library.
 
-Whether anything is asked is not decided here: `interact.decide` owns the
-one three-condition gate, and this module only hands it the flag and the
-model and feeds whatever comes back to `autocore.regenerate`.
-
-Warnings are rendered rather than merely printed. A real tree produces dozens
-of them, most of them the same code over and over, and a wall nobody reads is
-the same as no warnings at all. So a code seen `WARNING_GROUP_THRESHOLD`
-times or more collapses into one line naming the count, and the long file
-lists some warnings carry (`Warning.details`) stay folded away. Both open up
-under ``-v``, in full: this shortens what the user must scroll past, never
-what they can find out.
+Exit codes follow a simple rule:
+- 0: success, including success with warnings
+- 1: fatal runtime failure, including overwrite refusal without `--force`
+- 2: usage error, such as invalid flag values or a bad input path
 """
 
 from __future__ import annotations
@@ -54,20 +46,19 @@ app = typer.Typer(
     add_completion=False,
 )
 
-#: FuseSoC's `Vlnv` accepts exactly this per part. `--name`/`--library`
-#: are validated here rather than in the pipeline, because a bad VLNV part is
-#: a usage error, not a pipeline concern.
+#: Validation pattern for one FuseSoC VLNV part.
+#: `--name` and `--library` are checked here because an invalid VLNV part is a
+#: user input error, not a pipeline resolution problem.
 _VLNV_PART_RE = re.compile(r"[A-Za-z0-9_.\-]+")
 
-#: The two ``--define`` forms: ``NAME`` and ``NAME=VALUE``. The name half is
-#: an SV identifier (`$` is legal in one, unusually); the value half is
-#: anything at all, including empty, because ``-DNAME=`` is how a tree says
-#: "defined, expanding to nothing".
+#: Accepted `--define` forms: `NAME` and `NAME=VALUE`.
+#: The name portion follows SystemVerilog identifier rules, including `$`.
+#: The value portion may be anything, including empty text.
 _DEFINE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(=.*)?\Z", re.DOTALL)
 
-#: How many warnings sharing one code it takes before they collapse into a
-#: single counted line. Two of a kind is not a wall; three is the start of
-#: one, and by picorv32's 25 the user has stopped reading.
+#: Number of warnings with the same code needed before grouping kicks in.
+#: This keeps common repeated diagnostics readable in normal output while
+#: `-v` still shows everything in full.
 WARNING_GROUP_THRESHOLD = 3
 
 
@@ -87,11 +78,15 @@ def main(
         callback=_version_callback,
     ),
 ) -> None:
-    """auto-core."""
+    """Root Typer callback for the autocore CLI."""
 
 
 def _vlnv_part(value: str | None) -> str | None:
-    """Reject a ``--name``/``--library`` fusesoc's VLNV parser would choke on."""
+    """Validate one `--name` or `--library` VLNV part.
+
+    The CLI rejects invalid values early so the user gets a clear usage error
+    instead of a later failure deeper in the toolchain.
+    """
     if value is None or _VLNV_PART_RE.fullmatch(value):
         return value
     raise typer.BadParameter(
@@ -228,7 +223,12 @@ def init(
         typer.Option("--quiet", "-q", help="Silence warnings and status lines."),
     ] = False,
 ) -> None:
-    """Scan PATH and emit one FuseSoC CAPI2 .core manifest for it."""
+    """Scan `PATH` and generate one FuseSoC CAPI2 `.core` manifest.
+
+This is the main user-facing command. It runs the pipeline, optionally asks
+about ambiguities, prints warnings and status information to stderr, and then
+either writes the result to a file or prints it to stdout under `--dry-run`.
+"""
     if verbose and quiet:
         raise typer.BadParameter("--verbose and --quiet exclude each other")
 
@@ -398,7 +398,7 @@ def _warning_lines(
 def _warning_line(
     warning: PipelineWarning, root: Path, *, fold_details: bool = False
 ) -> str:
-    """One stderr line per warning: path (tree-relative), message, code."""
+    """Render one warning as a single stderr line."""
     line = f"warning: {_located(warning, root)}{warning.message} [{warning.code}]"
     if fold_details and warning.details:
         line += " (-v lists them)"
@@ -406,7 +406,7 @@ def _warning_line(
 
 
 def _located(warning: PipelineWarning, root: Path) -> str:
-    """The ``path: `` prefix of a warning line, empty for a tree-wide one."""
+    """Return the `path: ` prefix for a warning line, or an empty string."""
     if warning.path is None:
         return ""
     try:
