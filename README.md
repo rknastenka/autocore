@@ -27,6 +27,8 @@ testbenches.
 VHDL is not supported yet; `.vhd`/`.vhdl` files are reported
 and skipped. -->
 
+**please read this [doc](https://docs.google.com/document/d/10dn8inR7h-viTRuNyacbCYbZyuc5Hmy5T926hE0cuhE/edit?usp=sharing) first for more context about the project.**
+
 **Autocore** is a small open-source Python CLI that scans a folder of Verilog/SystemVerilog and generates a working FuseSoC `.core` manifest, the YAML file FuseSoC needs to know what the source files are, how they depend on each other, and what the top level module is. Normally these are written by hand, which is tedious and easy to get wrong. Autocore does it automatically: point it at RTL, run one command, get a valid manifest.
 
 Under the hood it's a strict four stage pipeline, **Scan, Parse, Resolve, Emit**, built over frozen dataclasses, using `pyslang` to properly parse the SystemVerilog and Verilog and `ruamel.yaml` to write out comment preserving YAML. Everything is built around one hard rule: the same input tree has to produce byte identical output every time, no matter the machine or run.
