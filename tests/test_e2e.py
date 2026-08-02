@@ -1,5 +1,4 @@
 """Golden-file end-to-end tests.
-"""Golden-file end-to-end tests.
 
 Every fixture tree goes through the real pipeline in ``--yes`` mode and is
 byte-compared against ``golden/<fixture>.core``. Fixtures are discovered, not

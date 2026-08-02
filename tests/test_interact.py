@@ -1,5 +1,4 @@
 """Tests for the interactive layer.
-"""Tests for the interactive layer.
 
 Three things are under test: the gate (prompt only at a TTY, without ``--yes``,
 with an ambiguity to raise), the questions (what is asked, in what order, with

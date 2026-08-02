@@ -1,51 +1,24 @@
 """Verilog and SystemVerilog backend, on pyslang 11.
 
-Single-file and syntax-level: one `SyntaxTree` per source file, no elaboration,
-no compilation unit shared between files. A module whose name comes from a macro
-defined in another file is therefore invisible. That is a stated limitation of
-autocore, and `--define` is the escape hatch.
+Syntax-level and single-file: one `SyntaxTree` per source file, no elaboration
+and no shared compilation unit, so a module named by a macro from elsewhere
+stays invisible. `--define` is the escape hatch.
 
-Three details of the pyslang API are worth knowing before touching the code
-below:
+Includes come from `tree.getIncludeDirectives()` plus a trivia scan that
+recovers the unresolved ones; we take the union, transitive includes included,
+since Resolve turns them into `include_dirs`. Search paths are a backend
+property: `SvSlangBackend.for_tree` seeds them from the header directories Scan
+found, otherwise a tree with headers in `include/` and sources in `rtl/` comes
+out entirely unparseable.
 
-* `SyntaxTree.fromFile` takes its arguments positionally; keyword arguments
-  are rejected.
-* Children are reached by index, `len(node)` then `node[i]`, and that order is
-  source order, the same in every process.
-* `fileName.valueText` on an include directive keeps its delimiters, so
-  `` `include "defs.svh" `` reads back as `'"defs.svh"'`. The model wants the
-  target as written with quotes stripped, which is `_strip_delimiters`.
+The same walk gathers testbench evidence (`$finish`/`$stop`, an empty port
+list, `initial`-heavy bodies) and the `` // autocore: tb|rtl `` directives.
+Evidence only; Resolve classifies. The scan recurses into preprocessor
+directives because slang hides a comment written above one in its trivia, and
+testbenches like to open with a magic comment above `` `timescale ``.
 
-Includes are collected along two paths. Resolved ones come from
-`tree.getIncludeDirectives()`; unresolved ones never appear there, but their
-`IncludeDirective` syntax survives in the trivia attached to the next real
-token, so the trivia scan recovers those. The union is what a file "includes",
-whether or not the header was found. Both paths report transitive includes: a
-header that itself includes another header contributes both. That is slang's
-behaviour, and it suits us, because Resolve turns these strings into
-`include_dirs` and every directory in the chain has to be listed for the
-emitted core to compile.
-
-Testbench evidence and magic comments both come out of the same walk. The
-three `TbEvidence` bits are structural: a ``$finish``/``$stop`` system call
-anywhere, a module declared with an empty port list, and a body whose `initial`
-blocks are at least as numerous as its `always` blocks and continuous
-assignments. Evidence only; classification happens in Resolve.
-`` // autocore: tb `` and `` // autocore: rtl `` are user directives rather
-than evidence, and they ride the same trivia scan the unresolved includes do.
-One wrinkle: slang folds a comment written directly above a preprocessor
-directive into that directive's trivia, where it never reaches a real token,
-so the scan recurses through directive syntax. Testbenches commonly open with
-a magic comment above `` `timescale ``.
-
-Include search paths are a backend property, not a per-file argument.
-`SvSlangBackend.for_tree` seeds them from the header directories Scan already
-found. Without that, a tree that keeps its headers in `include/` and its sources
-in `rtl/` would fail to resolve every `` `include ``, every macro from those
-headers would become an `UnknownDirective` error, and every file in the tree
-would be classified as unparseable. Reading a header a file explicitly asked
-for does not amount to sharing a compilation unit, so the single-file rule
-still holds.
+pyslang quirks: `fromFile` is positional-only, children come by index in source
+order, and `fileName.valueText` keeps its delimiters (`_strip_delimiters`).
 """
 
 from __future__ import annotations
