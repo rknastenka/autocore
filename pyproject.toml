@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auto-core"
+description = "Scan an RTL tree and emit a FuseSoC CAPI2 .core file."
+readme = "README.md"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Bana Tawalbeh" }]
+keywords = ["fusesoc", "capi2", "verilog", "systemverilog", "rtl", "eda"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+]
+dynamic = ["version"]
+dependencies = [
+  "pyslang>=11,<12",
+  "ruamel.yaml>=0.19",
+  "typer>=0.27",
+  "pathspec>=1.1",
+  "questionary>=2.1",
+]
+
+[project.scripts]
+autocore = "autocore.cli:app"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "fusesoc==2.4.6",
+  "ruff",
+]
+
+[project.urls]
+Homepage = "https://github.com/rknastenka/autocore"
+Source = "https://github.com/rknastenka/autocore"
+
+[tool.hatch.version]
+path = "src/autocore/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autocore"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
